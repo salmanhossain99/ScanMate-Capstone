@@ -95,16 +95,13 @@ PDF File → Text Extraction → Text Chunking → Gemma 3n Processing → Summa
 
 2. **Edit .env file** with your token:
    ```env
-   HUGGING_FACE_TOKEN=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
+   HUGGING_FACE_TOKEN=your_actual_token_here
    ```
 
 3. **The app will automatically use your environment token** - no manual entry needed!
 
 ### Quick Setup (Manual Entry)
-**For quick testing, you can also manually enter this token:**
-```
-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
-```
+**For quick testing, you can also manually enter your Hugging Face token in the app.**
 
 ### Installation Steps
 1. **Run the app** from `/example` folder

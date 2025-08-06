@@ -1,6 +1,6 @@
 # Copy this file to .env and replace with your actual token
 # Hugging Face Configuration
-HUGGING_FACE_TOKEN=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
+HUGGING_FACE_TOKEN=your_actual_token_here
 
 # AI Model Configuration
 GEMMA_MODEL_URL=https://huggingface.co/google/gemma-3n-E2B-it-litert-preview/resolve/main/gemma-3n-E2B-it-int4.task
