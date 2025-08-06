@@ -28,7 +28,7 @@ Replace the placeholder in `.env` file:
 
 ```env
 # Hugging Face Configuration
-HUGGING_FACE_TOKEN=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
+HUGGING_FACE_TOKEN=your_actual_token_here
 
 # AI Model Configuration
 GEMMA_MODEL_URL=https://huggingface.co/google/gemma-3n-E2B-it-litert-preview/resolve/main/gemma-3n-E2B-it-int4.task
@@ -120,7 +120,7 @@ flutter_doc_scanner-main/
 
 ### Option 1: Use Provided Token (Testing)
 ```
-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
+your_actual_token_here
 ```
 
 ### Option 2: Create Your Own Token

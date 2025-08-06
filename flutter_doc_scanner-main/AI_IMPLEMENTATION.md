@@ -115,7 +115,7 @@ PDF File → Text Extraction → Text Chunking → Gemma 3n Processing → Summa
 1. **Launch ScanMate** and scan or open any PDF document
 2. **Look for the AI Assistant icon** (🤖) in the top toolbar next to share/save buttons
 3. **Tap "AI Assistant"** - this will open the AI setup screen on first use
-4. **Copy and paste this token**: `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`
+4. **Copy and paste your Hugging Face token**
 5. **Tap "Download Model"** and wait for the download to complete
 6. **Once downloaded**, the AI feature is ready - no internet needed for future use!
 
@@ -237,7 +237,7 @@ This implementation is **competition-ready** and demonstrates:
 2. **Scan or open any PDF** in the app
 3. **Look for the AI Assistant icon** (🤖) in the PDF preview toolbar
 4. **Tap the AI Assistant button** to start the setup process
-5. **Use the provided token**: `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`
+5. **Use your Hugging Face token**
 6. **Wait for model download** (one-time process, 5-15 minutes)
 7. **Experience real AI summarization** - completely offline!
 
