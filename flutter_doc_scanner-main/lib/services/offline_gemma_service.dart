@@ -8,6 +8,7 @@ import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
 import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
+import 'env_service.dart';
 
 enum SummaryType { brief, comprehensive, detailed, keyPoints }
 
@@ -34,9 +35,14 @@ class PdfSummary {
 class OfflineGemmaService {
   // Official Gemma 3 Nano E2B int4 model (.task) – competition compliant
   static const String MODEL_NAME = 'gemma-3n-E2B-it-int4.task';
-  static const String MODEL_URL  = 'https://huggingface.co/google/gemma-3n-E2B-it-litert-preview/resolve/main/gemma-3n-E2B-it-int4.task';
   static const int MODEL_SIZE_BYTES = 3136290816; // 2.99 GB in bytes (actual model size)
   static const String MODEL_SIZE_DISPLAY = '2.99 GB';
+  
+  // Environment service for configuration
+  final EnvService _envService = EnvService();
+  
+  // Get model URL from environment or use default
+  String get modelUrl => _envService.gemmaModelUrl;
 
   // Legacy gguf model that is no longer compatible – delete on startup if present
   static const String LEGACY_MODEL_NAME = 'gemma-2b-it-Q4_0.gguf';
@@ -117,10 +123,10 @@ class OfflineGemmaService {
       }
       
       onProgress(0.0, '📡 Connecting to Hugging Face...');
-      debugPrint('Starting model download from: $MODEL_URL');
+      debugPrint('Starting model download from: $modelUrl');
       
       // Custom HTTP download with proper authentication
-      await _downloadModelWithProgress(MODEL_URL, modelFile, huggingFaceToken, onProgress);
+      await _downloadModelWithProgress(modelUrl, modelFile, huggingFaceToken, onProgress);
       
       debugPrint('✅ Model downloaded successfully');
       

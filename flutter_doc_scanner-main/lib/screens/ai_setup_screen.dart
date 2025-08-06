@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import '../services/offline_gemma_service.dart';
+import '../services/env_service.dart';
 
 class AISetupScreen extends StatefulWidget {
   @override
@@ -10,6 +11,7 @@ class AISetupScreen extends StatefulWidget {
 class _AISetupScreenState extends State<AISetupScreen> {
   final OfflineGemmaService _gemmaService = OfflineGemmaService();
   final TextEditingController _tokenController = TextEditingController();
+  final EnvService _envService = EnvService();
   
   bool _isDownloading = false;
   bool _isModelReady = false;
@@ -20,7 +22,17 @@ class _AISetupScreenState extends State<AISetupScreen> {
   @override
   void initState() {
     super.initState();
+    _initializeWithEnvToken();
     _checkModelStatus();
+  }
+  
+  /// Initialize with token from environment if available
+  void _initializeWithEnvToken() {
+    final envToken = _envService.huggingFaceToken;
+    if (envToken.isNotEmpty) {
+      _tokenController.text = envToken;
+      debugPrint('🔑 Pre-filled token from environment');
+    }
   }
   
   @override
@@ -67,8 +79,14 @@ class _AISetupScreenState extends State<AISetupScreen> {
   }
   
   Future<void> _downloadModel() async {
-    if (_tokenController.text.trim().isEmpty) {
-      _showError('Please enter your Hugging Face token');
+    // Use environment token if available, otherwise use user input
+    String token = _tokenController.text.trim();
+    if (token.isEmpty) {
+      token = _envService.huggingFaceToken;
+    }
+    
+    if (token.isEmpty) {
+      _showError('Please enter your Hugging Face token or configure .env file');
       return;
     }
     
@@ -78,8 +96,10 @@ class _AISetupScreenState extends State<AISetupScreen> {
     });
     
     try {
+      debugPrint('🔑 Using token: ${token.substring(0, 10)}...');
+      
       await _gemmaService.downloadModel(
-        _tokenController.text.trim(),
+        token,
         onProgress: (progress, status) {
           if (mounted) {
             setState(() {
@@ -419,12 +439,31 @@ class _AISetupScreenState extends State<AISetupScreen> {
                         ),
                         SizedBox(height: 8),
                         Text(
-                          'A free Hugging Face account is needed to download the AI model. The token is only used once for download.',
+                          _envService.isConfigured 
+                            ? 'Token loaded from environment (.env file). Ready to download!'
+                            : 'A free Hugging Face account is needed to download the AI model. The token is only used once for download.',
                           style: TextStyle(
                             color: Colors.white.withOpacity(0.8),
                             fontSize: 14,
                           ),
                         ),
+                        if (_envService.isConfigured) ...[
+                          SizedBox(height: 8),
+                          Row(
+                            children: [
+                              Icon(Icons.check_circle, color: Colors.green, size: 16),
+                              SizedBox(width: 4),
+                              Text(
+                                'Environment configured',
+                                style: TextStyle(
+                                  color: Colors.green,
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
                       ],
                     ),
                   ),

@@ -85,8 +85,23 @@ PDF File → Text Extraction → Text Chunking → Gemma 3n Processing → Summa
 
 ## 🔧 Setup Instructions
 
-### Quick Setup (Ready-to-Use Token)
-**For immediate testing, use this pre-configured token:**
+### 🔐 Secure Setup (Recommended)
+**For production use, store your token securely in environment variables:**
+
+1. **Copy the template file**:
+   ```bash
+   cp env_template.txt .env
+   ```
+
+2. **Edit .env file** with your token:
+   ```env
+   HUGGING_FACE_TOKEN=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
+   ```
+
+3. **The app will automatically use your environment token** - no manual entry needed!
+
+### Quick Setup (Manual Entry)
+**For quick testing, you can also manually enter this token:**
 ```
 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
 ```
@@ -116,6 +131,12 @@ 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
 - **Device Storage**: Ensure 3GB+ free space for model download
 - **Internet Connection**: Only needed once for initial model download
 - **Compatible Device**: Android 7.0+ or iOS 13.0+ recommended
+
+### 🔐 Security Note
+- **Environment Variables**: Tokens are now stored securely in `.env` files
+- **Git Protection**: `.env` files are automatically ignored by Git
+- **No Hardcoded Secrets**: Safe to push to public repositories
+- **See ENV_SETUP_GUIDE.md** for detailed security setup instructions
 
 ## 🎯 Competition Advantages
 
