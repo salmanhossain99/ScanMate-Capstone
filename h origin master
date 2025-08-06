@@ -1,0 +1,2 @@
+[33m103fb9e[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mmaster[m[33m)[m Security: Remove all remaining hardcoded Hugging Face tokens
+[33mfb13ec4[m Security: Remove hardcoded Hugging Face tokens from codebase
