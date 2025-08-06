@@ -1,16 +1,131 @@
+import 'dart:io';
+import 'dart:isolate';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_doc_scanner/flutter_doc_scanner.dart';
+import 'package:flutter_doc_scanner/models/document.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:path_provider/path_provider.dart';
-import 'package:permission_handler/permission_handler.dart';
-import 'package:provider/provider.dart';
-import 'dart:io';
 import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
+import 'package:permission_handler/permission_handler.dart';
+import 'package:provider/provider.dart';
+import 'package:share_plus/share_plus.dart';
+import 'package:file_saver/file_saver.dart';
+import 'package:device_info_plus/device_info_plus.dart';
+import 'package:flutter_doc_scanner/services/pdf_service.dart';
+import 'package:path/path.dart' as path;
+
 import '../providers/user_provider.dart';
 import 'sign_in_screen.dart';
 import 'document_cover_page_screen.dart';
+import '../main.dart';
+import 'package:flutter/foundation.dart';
+import 'package:image/image.dart' as img;
+
+// AI Setup imports
+import 'package:flutter_doc_scanner/screens/ai_setup_screen.dart';
+
+// This needs to be a top-level function to be used with compute
+Future<Uint8List> _generatePdfInBackground(Map<String, dynamic> params) async {
+  final documents = params['documents'];
+  final pdf = pw.Document();
+
+  List<String> imagePaths = [];
+  Map<String, dynamic>? coverPageInfo;
+  List<dynamic> sourceDocuments = [];
+
+  if (documents is Map<String, dynamic>) {
+    // Case: Scan with Cover Page
+    sourceDocuments = documents['documents'] as List<dynamic>? ?? [];
+    coverPageInfo = documents['coverPage'] as Map<String, dynamic>?;
+  } else if (documents is List) {
+    // Case: Scan Document
+    sourceDocuments = documents;
+  }
+
+  // Safely convert sourceDocuments to a list of path strings
+  for (final doc in sourceDocuments) {
+    if (doc is String) {
+      imagePaths.add(doc);
+    } else if (doc is Map) {
+      // It's a map, let's find the path. The plugin seems to return the path as the only value.
+      if (doc.values.isNotEmpty && doc.values.first is String) {
+        imagePaths.add(doc.values.first);
+      }
+    }
+  }
+
+  // Add cover page if it exists
+  if (coverPageInfo != null) {
+    final coverInfo = coverPageInfo; // Create a local non-nullable variable
+    pdf.addPage(
+      pw.Page(
+        build: (context) {
+          return pw.Column(
+            crossAxisAlignment: pw.CrossAxisAlignment.start,
+            children: [
+              pw.Center(
+                child: pw.Text('Document Cover Page', style: pw.TextStyle(fontSize: 24, fontWeight: pw.FontWeight.bold)),
+              ),
+              pw.SizedBox(height: 40),
+              pw.Text('Student Information', style: pw.TextStyle(fontSize: 18, fontWeight: pw.FontWeight.bold)),
+              pw.SizedBox(height: 20),
+              pw.Text('Name: ${coverInfo['name']}'),
+              pw.SizedBox(height: 10),
+              pw.Text('Email: ${coverInfo['email']}'),
+              pw.SizedBox(height: 10),
+              pw.Text('Student ID: ${coverInfo['studentId']}'),
+              pw.SizedBox(height: 10),
+              pw.Text('Course: ${coverInfo['courseName']}'),
+              pw.SizedBox(height: 40),
+              pw.Text('Document Information', style: pw.TextStyle(fontSize: 18, fontWeight: pw.FontWeight.bold)),
+              pw.SizedBox(height: 20),
+              pw.Text('Total Pages: ${imagePaths.length}'),
+              pw.SizedBox(height: 10),
+              pw.Text('Date: ${DateTime.now().toString().split('.')[0]}'),
+            ],
+          );
+        },
+      ),
+    );
+  }
+
+  for (var imagePath in imagePaths) {
+    try {
+      final imageFile = File(imagePath);
+      if (await imageFile.exists()) {
+        final imageBytes = await imageFile.readAsBytes();
+        final image = img.decodeImage(imageBytes);
+
+        if (image != null) {
+          // Resize image to a smaller width and lower quality for faster processing
+          final resizedImage = img.copyResize(image, width: 600); // Reduced width
+          final jpegBytes = img.encodeJpg(resizedImage, quality: 75); // Lowered quality
+          final pdfImage = pw.MemoryImage(jpegBytes);
+
+          pdf.addPage(
+            pw.Page(
+              pageFormat: PdfPageFormat.a4,
+              build: (context) {
+                return pw.Center(
+                  child: pw.Image(pdfImage),
+                );
+              },
+            ),
+          );
+        }
+      }
+    } catch (e) {
+      if (kDebugMode) {
+        print('Error processing image: $imagePath, error: $e');
+      }
+      continue;
+    }
+  }
+
+  return pdf.save();
+}
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({Key? key}) : super(key: key);
@@ -21,120 +136,135 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen> {
   dynamic _scannedDocuments;
+  int _bottomNavIndex = 0;
+  String? _lastSavedFilePath;
+  final TextEditingController _searchController = TextEditingController();
+  List<FileSystemEntity> _downloadedFiles = [];
 
-  Future<bool> _requestPermissions() async {
-    if (Platform.isAndroid) {
-      // Request basic permissions
-      final storage = await Permission.storage.request();
-      final camera = await Permission.camera.request();
+  @override
+  void initState() {
+    super.initState();
+    _loadDownloadedFiles();
+  }
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _loadDownloadedFiles() async {
+    try {
+      Directory? scanMateDir;
+      if (Platform.isAndroid) {
+        scanMateDir = Directory('/storage/emulated/0/Download/ScanMate');
+        if (!await scanMateDir.exists()) {
+          final externalDir = await getExternalStorageDirectory();
+          if (externalDir != null) {
+            scanMateDir = Directory('${externalDir.path}/ScanMate');
+          }
+        }
+      } else {
+        final documentsDir = await getApplicationDocumentsDirectory();
+        scanMateDir = Directory('${documentsDir.path}/ScanMate');
+      }
+
+      if (scanMateDir != null && await scanMateDir.exists()) {
+        final files = await scanMateDir.list().toList();
+        setState(() {
+          _downloadedFiles = files.where((file) => 
+            file is File && file.path.toLowerCase().endsWith('.pdf')).toList();
+        });
+      }
+    } catch (e) {
+      print('Error loading downloaded files: $e');
+    }
+  }
+  
+  /// Open AI Setup Screen for Gemma 3n model download and configuration
+  Future<void> _openAISetup() async {
+    try {
+      final result = await Navigator.of(context).push(
+        MaterialPageRoute(builder: (context) => AISetupScreen()),
+      );
       
-      // For Android 11 (API level 30) and above
-      if (await Permission.manageExternalStorage.shouldShowRequestRationale) {
-        final manageStorage = await Permission.manageExternalStorage.request();
-        if (!manageStorage.isGranted) {
-          if (!mounted) return false;
-          final shouldOpenSettings = await showDialog<bool>(
-            context: context,
-            builder: (context) => AlertDialog(
-              title: const Text('Additional Permission Required'),
-              content: const Text('ScanMate needs additional storage permission to save documents. Please enable "All Files Access" in Settings.'),
-              actions: [
-                TextButton(
-                  onPressed: () => Navigator.pop(context, false),
-                  child: const Text('Cancel'),
-                ),
-                FilledButton(
-                  onPressed: () => Navigator.pop(context, true),
-                  child: const Text('Open Settings'),
+      if (result == true) {
+        // AI setup completed successfully
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Row(
+              children: [
+                Icon(Icons.check_circle, color: Colors.white),
+                SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    'AI is ready! Look for the robot icon in PDF preview.',
+                    style: GoogleFonts.poppins(color: Colors.white),
+                  ),
                 ),
               ],
             ),
-          ) ?? false;
-          
-          if (shouldOpenSettings) {
-            await openAppSettings();
-          }
-          return false;
-        }
-      }
-      
-      // Check if we have all required permissions
-      if (storage.isGranted && camera.isGranted) {
-        return true;
-      }
-      
-      // Handle permanently denied permissions
-      if (storage.isPermanentlyDenied || camera.isPermanentlyDenied) {
-        if (!mounted) return false;
-        final shouldOpenSettings = await showDialog<bool>(
-          context: context,
-          builder: (context) => AlertDialog(
-            title: const Text('Permissions Required'),
-            content: const Text('Storage and Camera permissions are required to scan and save documents. Please enable them in settings.'),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(context, false),
-                child: const Text('Cancel'),
-              ),
-              FilledButton(
-                onPressed: () => Navigator.pop(context, true),
-                child: const Text('Open Settings'),
-              ),
-            ],
+            backgroundColor: Colors.green,
+            behavior: SnackBarBehavior.floating,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(10),
+            ),
+            margin: const EdgeInsets.all(8),
+            duration: const Duration(seconds: 4),
           ),
-        ) ?? false;
-        
-        if (shouldOpenSettings) {
-          await openAppSettings();
-        }
+        );
       }
-      return false;
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Error opening AI setup: $e'),
+          backgroundColor: Colors.red,
+        ),
+      );
     }
-    return true;
   }
 
-  Future<String> _createAppFolder() async {
+  Future<bool> _requestPermissions() async {
+    // For Android 13+ (API level 33+)
     if (Platform.isAndroid) {
-      try {
-        // First try to use the Downloads directory
-        final directory = Directory('/storage/emulated/0/Download/ScanMate');
-        if (!await directory.exists()) {
-          await directory.create(recursive: true);
-        }
-        return directory.path;
-      } catch (e) {
-        // If Downloads directory is not accessible, fallback to app's external storage
-        final directory = await getExternalStorageDirectory();
-        if (directory == null) throw Exception('Could not access external storage');
+      final androidInfo = await DeviceInfoPlugin().androidInfo;
+      if (androidInfo.version.sdkInt >= 33) {
+        // Request the new media permissions
+        Map<Permission, PermissionStatus> statuses = await [
+          Permission.photos,
+          Permission.videos,
+        ].request();
         
-        // Create the ScanMate folder in the root of external storage
-        final newPath = directory.path.replaceAll(RegExp(r'/Android/data/.*'), '/ScanMate');
-        final dir = Directory(newPath);
-        if (!await dir.exists()) {
-          await dir.create(recursive: true);
-        }
-        return newPath;
+        return statuses.values.every((status) => status.isGranted);
+      } else {
+        // For Android 12 and below
+        Map<Permission, PermissionStatus> statuses = await [
+          Permission.storage,
+        ].request();
+        
+        return statuses.values.every((status) => status.isGranted);
       }
     } else {
-      final directory = await getApplicationDocumentsDirectory();
-      final scanMatePath = '${directory.path}/ScanMate';
-      final dir = Directory(scanMatePath);
-      if (!await dir.exists()) {
-        await dir.create(recursive: true);
+      // For iOS
+      var status = await Permission.storage.status;
+      if (!status.isGranted) {
+        status = await Permission.storage.request();
       }
-      return scanMatePath;
+      return status.isGranted;
     }
   }
 
   Future<void> _saveImage(String imagePath) async {
     try {
-      final appFolderPath = await _createAppFolder();
       final fileName = 'scan_${DateTime.now().millisecondsSinceEpoch}.jpg';
-      final savedImagePath = '$appFolderPath/$fileName';
       
-      // Copy the image to our app's folder
-      await File(imagePath).copy(savedImagePath);
-      
+      await FileSaver.instance.saveFile(
+        name: fileName,
+        file: File(imagePath),
+        ext: 'jpg',
+        mimeType: MimeType.jpeg,
+      );
+
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
@@ -144,7 +274,7 @@ class _HomeScreenState extends State<HomeScreen> {
               const SizedBox(width: 8),
               Expanded(
                 child: Text(
-                  'Image saved to: $savedImagePath',
+                  'Image saved to Downloads folder',
                   style: GoogleFonts.poppins(color: Colors.white),
                 ),
               ),
@@ -170,119 +300,178 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
+  Future<void> _shareLastSavedFile() async {
+    if (_lastSavedFilePath == null) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('No recently saved file to share'),
+          backgroundColor: Colors.red,
+        ),
+      );
+      return;
+    }
+
+    try {
+      await Share.shareXFiles(
+        [XFile(_lastSavedFilePath!)],
+        text: 'ScanMate Document',
+        subject: 'Shared from ScanMate',
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Error sharing file: $e'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
+  }
+
   Future<void> _savePDF(dynamic documents) async {
     try {
-      final appFolderPath = await _createAppFolder();
-      print('Saving to folder: $appFolderPath'); // Debug print
+      if (!mounted) return;
       
-      final pdf = pw.Document();
-
-      // If documents is a map with cover page info
-      if (documents is Map<String, dynamic>) {
-        final coverPageInfo = documents['coverPage'] as Map<String, dynamic>;
-        final scannedDocs = documents['documents'] as List;
-
-        // Add cover page
-        pdf.addPage(
-          pw.Page(
-            build: (context) {
-              return pw.Column(
-                crossAxisAlignment: pw.CrossAxisAlignment.start,
-                children: [
-                  pw.Center(
-                    child: pw.Text(
-                      'Document Cover Page',
-                      style: pw.TextStyle(
-                        fontSize: 24,
-                        fontWeight: pw.FontWeight.bold,
-                      ),
-                    ),
-                  ),
-                  pw.SizedBox(height: 40),
-                  pw.Text(
-                    'Student Information',
-                    style: pw.TextStyle(
-                      fontSize: 18,
-                      fontWeight: pw.FontWeight.bold,
-                    ),
-                  ),
-                  pw.SizedBox(height: 20),
-                  pw.Text('Name: ${coverPageInfo['name']}'),
-                  pw.SizedBox(height: 10),
-                  pw.Text('Email: ${coverPageInfo['email']}'),
-                  pw.SizedBox(height: 10),
-                  pw.Text('Student ID: ${coverPageInfo['studentId']}'),
-                  pw.SizedBox(height: 10),
-                  pw.Text('Course: ${coverPageInfo['courseName']}'),
-                  pw.SizedBox(height: 40),
-                  pw.Text(
-                    'Document Information',
-                    style: pw.TextStyle(
-                      fontSize: 18,
-                      fontWeight: pw.FontWeight.bold,
-                    ),
-                  ),
-                  pw.SizedBox(height: 20),
-                  pw.Text('Total Pages: ${scannedDocs.length}'),
-                  pw.SizedBox(height: 10),
-                  pw.Text('Date: ${DateTime.now().toString().split('.')[0]}'),
-                ],
-              );
-            },
+      // Show an immediate, non-blocking notification
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Row(
+            children: [
+              const CircularProgressIndicator(strokeWidth: 2),
+              const SizedBox(width: 20),
+              Text("Creating PDF in the background...", style: GoogleFonts.poppins()),
+            ],
           ),
-        );
+          duration: const Duration(seconds: 5), // Keep it visible for a while
+        ),
+      );
 
-        // Add scanned documents
-        for (var image in scannedDocs) {
-          try {
-            final imageFile = File(image);
-            if (await imageFile.exists()) {
-              final img = pw.MemoryImage(await imageFile.readAsBytes());
-              pdf.addPage(
-                pw.Page(
-                  build: (context) {
-                    return pw.Center(
-                      child: pw.Image(img),
-                    );
-                  },
-                ),
-              );
+      // Debug print to trace execution
+      print('\n\n');
+      print('======================================================');
+      print('HOME SCREEN: USING OPTIMIZED PDF GENERATION');
+      print('Documents to process: ${documents is List ? documents.length : "unknown"}');
+      print('======================================================');
+      print('\n\n');
+
+      final stopwatch = Stopwatch()..start();
+      
+      // Convert string paths to File objects
+      final List<File> imageFiles = [];
+      if (documents is List) {
+        for (final imagePath in documents) {
+          if (imagePath is String) {
+            final file = File(imagePath);
+            if (await file.exists()) {
+              imageFiles.add(file);
             }
-          } catch (e) {
-            print('Error processing image: $e');
-            continue;
-          }
-        }
-      } else if (documents is List) {
-        // Handle regular document scanning without cover page
-        for (var image in documents) {
-          try {
-            final imageFile = File(image);
-            if (await imageFile.exists()) {
-              final img = pw.MemoryImage(await imageFile.readAsBytes());
-              pdf.addPage(
-                pw.Page(
-                  build: (context) {
-                    return pw.Center(
-                      child: pw.Image(img),
-                    );
-                  },
-                ),
-              );
-            }
-          } catch (e) {
-            print('Error processing image: $e');
-            continue;
           }
         }
       }
+      
+      // Use our optimized PDF service instead of compute
+      final pdfService = PdfService();
+      final File pdfFile = await pdfService.generateOptimizedPdf(
+        images: imageFiles,
+        title: 'Document Scan ${DateTime.now().toString().split('.')[0]}',
+        onProgress: (progress) {
+          print('HOME: PDF Progress: ${(progress * 100).toStringAsFixed(1)}%');
+        },
+      );
+      
+      final pdfBytes = await pdfFile.readAsBytes();
+      
+      print('\n\n');
+      print('======================================================');
+      print('HOME SCREEN: OPTIMIZED PDF GENERATION COMPLETED IN ${stopwatch.elapsedMilliseconds}ms');
+      print('PDF SIZE: ${pdfBytes.length ~/ 1024}KB');
+      print('======================================================');
+      print('\n\n');
 
       final String timestamp = DateTime.now().millisecondsSinceEpoch.toString();
-      final file = File('$appFolderPath/ScanMate_$timestamp.pdf');
-      print('Saving PDF to: ${file.path}'); // Debug print
+      final String fileName = 'ScanMate_$timestamp.pdf';
       
-      await file.writeAsBytes(await pdf.save());
-      print('PDF saved successfully'); // Debug print
+      // Try the direct file saving approach first
+      try {
+        // Get the Downloads directory
+        Directory? externalDir;
+        if (Platform.isAndroid) {
+          externalDir = Directory('/storage/emulated/0/Download');
+          if (!await externalDir.exists()) {
+            // Fallback to external storage directory
+            externalDir = await getExternalStorageDirectory();
+          }
+        } else {
+          externalDir = await getApplicationDocumentsDirectory();
+        }
+        
+        if (externalDir != null) {
+          // Create ScanMate directory if it doesn't exist
+          final scanMateDir = Directory('${externalDir.path}/ScanMate');
+          if (!await scanMateDir.exists()) {
+            await scanMateDir.create(recursive: true);
+          }
+          
+          // Save the file
+          final file = File('${scanMateDir.path}/$fileName');
+          await file.writeAsBytes(pdfBytes);
+          
+          // Store the file path for sharing later
+          _lastSavedFilePath = file.path;
+          
+          if (!mounted) return;
+          
+          // Show success message with share option
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Row(
+                children: [
+                  const Icon(Icons.check_circle, color: Colors.white),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'PDF saved to ${scanMateDir.path}',
+                      style: GoogleFonts.poppins(color: Colors.white),
+                    ),
+                  ),
+                ],
+              ),
+              action: SnackBarAction(
+                label: 'SHARE',
+                textColor: Colors.white,
+                onPressed: _shareLastSavedFile,
+              ),
+              backgroundColor: Colors.purple,
+              behavior: SnackBarBehavior.floating,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(10),
+              ),
+              margin: const EdgeInsets.all(8),
+              duration: const Duration(seconds: 6),
+            ),
+          );
+          
+          setState(() {
+            _scannedDocuments = documents;
+          });
+          return;
+        }
+      } catch (directSaveError) {
+        print('Direct save failed: $directSaveError');
+        // Fall back to FileSaver if direct save fails
+      }
+
+      // Fallback to FileSaver
+      await FileSaver.instance.saveFile(
+        name: fileName.split('.').first,
+        bytes: pdfBytes,
+        ext: 'pdf',
+        mimeType: MimeType.pdf,
+      );
+
+      // Can't reliably get the file path when using FileSaver
+      _lastSavedFilePath = null;
 
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -293,7 +482,7 @@ class _HomeScreenState extends State<HomeScreen> {
               const SizedBox(width: 8),
               Expanded(
                 child: Text(
-                  'PDF saved to: ${file.path}',
+                  'PDF saved to Downloads folder',
                   style: GoogleFonts.poppins(color: Colors.white),
                 ),
               ),
@@ -308,8 +497,11 @@ class _HomeScreenState extends State<HomeScreen> {
           duration: const Duration(seconds: 4),
         ),
       );
+      
+      setState(() {
+        _scannedDocuments = documents;
+      });
     } catch (e) {
-      print('Error saving PDF: $e'); // Debug print
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
@@ -369,37 +561,17 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  Future<void> scanDocumentWithCoverPage() async {
-    if (!await _requestPermissions()) {
-      print('Permission not granted');
-      return;
-    }
+  Future<void> scanWithCoverPage() async {
+    if (!await _requestPermissions()) return;
 
     try {
-      print('Starting document scan...');
-      final scannedDocs = await FlutterDocScanner().getScanDocuments(page: 4);
-      print('Scan result type: ${scannedDocs.runtimeType}');
-      print('Scan result: $scannedDocs');
-      
-      // Convert the scan result to a list if it's not already
-      List<dynamic> documentsList;
-      if (scannedDocs is List) {
-        documentsList = scannedDocs;
-      } else if (scannedDocs is Map) {
-        documentsList = [scannedDocs];
-      } else {
-        print('Invalid scan result type');
-        if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Invalid scan result. Please try again.'),
-            backgroundColor: Colors.red,
-          ),
-        );
-        return;
-      }
+      // This is the FIX: Directly call getScanDocuments.
+      final documentsList =
+          await FlutterDocScanner().getScanDocuments(page: 100);
 
-      if (documentsList.isNotEmpty) {
+      if (documentsList != null &&
+          documentsList is List &&
+          documentsList.isNotEmpty) {
         print('Documents scanned successfully: ${documentsList.length} pages');
         if (!mounted) return;
         
@@ -414,54 +586,15 @@ class _HomeScreenState extends State<HomeScreen> {
         );
         print('Cover page result: $result');
         
-        // Only save if we got a result back (user didn't cancel)
+        // The result is now returned from the preview screen after saving.
         if (result != null && result is Map) {
-          try {
-            print('Preparing to save PDF with cover page...');
-            // Show saving indicator
-            if (!mounted) return;
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(
-                content: Row(
-                  children: [
-                    SizedBox(
-                      width: 20,
-                      height: 20,
-                      child: CircularProgressIndicator(
-                        strokeWidth: 2,
-                        color: Colors.white,
-                      ),
-                    ),
-                    SizedBox(width: 8),
-                    Text('Saving document...'),
-                  ],
-                ),
-                duration: Duration(seconds: 2),
-              ),
-            );
-            
-            // Save the PDF
-            await _savePDF(result);
-            
-            // Update state
-            setState(() {
-              _scannedDocuments = result;
-            });
-          } catch (e) {
-            print('Error saving document: $e');
-            if (!mounted) return;
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(
-                content: Text('Error saving document: $e'),
-                backgroundColor: Colors.red,
-              ),
-            );
-          }
-        } else {
-          print('No result from cover page or user cancelled');
+          // Update state to show the new document in the list
+          setState(() {
+            _scannedDocuments = result;
+          });
         }
       } else {
-        print('No documents scanned or invalid scan result');
+        print('No documents were scanned or returned.');
         if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
@@ -491,186 +624,951 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
+  // Add this function to test PDF generation with our optimized method
+  Future<void> _testOptimizedPdf() async {
+    print('\n\n');
+    print('======================================================');
+    print('TEST: Starting optimized PDF generation test');
+    print('======================================================');
+    print('\n\n');
+    
+    try {
+      // Show progress dialog first to give immediate feedback
+      if (!mounted) return;
+      showDialog(
+        context: context,
+        barrierDismissible: false,
+        builder: (context) => const AlertDialog(
+          title: Text('Testing PDF Generation'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              CircularProgressIndicator(),
+              SizedBox(height: 16),
+              Text('Processing files with optimized method...'),
+            ],
+          ),
+        ),
+      );
+
+      // Use the sample image from assets - copy it multiple times to temp directory
+      final ByteData data = await rootBundle.load('assets/nsu_logo.png');
+      final List<File> imageFiles = [];
+      final tempDir = await getTemporaryDirectory();
+      
+      // Create multiple copies of the image to simulate multiple page document
+      final int numPages = 5;
+      for (int i = 0; i < numPages; i++) {
+        final String tempImagePath = '${tempDir.path}/test_image_$i.png';
+        final File tempFile = File(tempImagePath);
+        await tempFile.writeAsBytes(data.buffer.asUint8List());
+        imageFiles.add(tempFile);
+      }
+      
+      print('TEST: Created $numPages test image files');
+      
+      // Use the optimized PDF service
+      final stopwatch = Stopwatch()..start();
+      final pdfService = PdfService();
+      
+      final File pdfFile = await pdfService.generateOptimizedPdf(
+        images: imageFiles,
+        title: 'Test PDF',
+        onProgress: (progress) {
+          print('TEST: Progress: ${(progress * 100).toStringAsFixed(1)}%');
+        },
+      );
+      
+      // Close the dialog
+      if (mounted) Navigator.of(context).pop();
+      
+      stopwatch.stop();
+      final fileSize = await pdfFile.length();
+      
+      print('\n\n');
+      print('======================================================');
+      print('TEST: Optimized PDF generation completed in ${stopwatch.elapsedMilliseconds}ms');
+      print('TEST: PDF file size: ${fileSize ~/ 1024}KB');
+      print('TEST: PDF saved at: ${pdfFile.path}');
+      print('======================================================');
+      print('\n\n');
+      
+      // Show success message
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('PDF generated in ${stopwatch.elapsedMilliseconds}ms'),
+          backgroundColor: Colors.green,
+          action: SnackBarAction(
+            label: 'SHARE',
+            textColor: Colors.white,
+            onPressed: () {
+              if (pdfFile.existsSync()) {
+                _lastSavedFilePath = pdfFile.path;
+                _shareLastSavedFile();
+              }
+            },
+          ),
+        ),
+      );
+      
+      // Store the file path for sharing later
+      _lastSavedFilePath = pdfFile.path;
+      
+    } catch (e) {
+      print('TEST ERROR: $e');
+      
+      // Close dialog if showing
+      if (mounted) Navigator.of(context).pop();
+      
+      // Show error message
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Error: $e'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
-    final user = context.watch<UserProvider>();
-    
     return Scaffold(
-      backgroundColor: Theme.of(context).colorScheme.background,
-      body: SafeArea(
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Padding(
-              padding: const EdgeInsets.all(24.0),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    'Welcome ${user.name}',
-                    style: GoogleFonts.poppins(
-                      fontSize: 32,
-                      fontWeight: FontWeight.bold,
-                      color: Colors.white,
-                    ),
-                  ),
-                  Text(
-                    'Scan & Create Documents',
-                    style: GoogleFonts.poppins(
-                      fontSize: 24,
-                      fontWeight: FontWeight.w500,
-                      color: Colors.white.withOpacity(0.9),
-                    ),
-                  ),
+      body: Stack(
+        children: [
+          // Background
+          _buildBackground(),
+
+          // Main content
+          SafeArea(
+            child: Column(
+              children: [
+                // Header
+                _buildHeader(),
+
+                // Body
+                Expanded(
+                  child: _buildBody(),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+      floatingActionButton: _buildFloatingFooter(),
+      floatingActionButtonLocation: FloatingActionButtonLocation.centerFloat,
+    );
+  }
+
+  Widget _buildBackground() {
+    return Column(
+      children: [
+        Expanded(
+          flex: 4,
+          child: Container(
+            decoration: const BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment.topCenter,
+                end: Alignment.bottomCenter,
+                stops: [0.0, 0.27, 1.0],
+                colors: [
+                  AppColors.gradientStart,
+                  AppColors.gradientMiddle,
+                  AppColors.gradientEnd,
                 ],
               ),
             ),
-            Expanded(
-              child: Container(
-                width: double.infinity,
-                padding: const EdgeInsets.all(24),
-                decoration: BoxDecoration(
-                  color: Theme.of(context).cardTheme.color,
-                  borderRadius: const BorderRadius.only(
-                    topLeft: Radius.circular(32),
-                    topRight: Radius.circular(32),
-                  ),
-                ),
-                child: Column(
-                  children: [
-                    const SizedBox(height: 16),
-                    GridView.count(
-                      shrinkWrap: true,
-                      crossAxisCount: 2,
-                      mainAxisSpacing: 20,
-                      crossAxisSpacing: 20,
-                      children: [
-                        _MenuCard(
-                          icon: Icons.qr_code_scanner,
-                          title: 'Scan\nDocument',
-                          onTap: () => scanDocument(),
-                        ),
-                        _MenuCard(
-                          icon: Icons.picture_as_pdf,
-                          title: 'Scan with\nCover Page',
-                          onTap: () => scanDocumentWithCoverPage(),
-                        ),
-                        _MenuCard(
-                          icon: Icons.history,
-                          title: 'Recent\nScans',
-                          onTap: () {
-                            // TODO: Implement history
-                          },
-                        ),
-                        _MenuCard(
-                          icon: Icons.settings,
-                          title: 'Settings',
-                          onTap: () {
-                            showModalBottomSheet(
-                              context: context,
-                              builder: (context) => Container(
-                                padding: const EdgeInsets.all(24),
-                                child: Column(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    ListTile(
-                                      leading: Icon(
-                                        user.isDarkMode
-                                            ? Icons.dark_mode
-                                            : Icons.light_mode,
-                                      ),
-                                      title: Text(
-                                        user.isDarkMode
-                                            ? 'Dark Mode'
-                                            : 'Light Mode',
-                                      ),
-                                      trailing: Switch(
-                                        value: user.isDarkMode,
-                                        onChanged: (_) => user.toggleTheme(),
-                                      ),
-                                    ),
-                                    ListTile(
-                                      leading: const Icon(Icons.logout),
-                                      title: const Text('Sign Out'),
-                                      onTap: () {
-                                        user.signOut();
-                                        Navigator.pushReplacement(
-                                          context,
-                                          MaterialPageRoute(
-                                            builder: (context) =>
-                                                const SignInScreen(),
-                                          ),
-                                        );
-                                      },
-                                    ),
-                                  ],
-                                ),
-                              ),
-                            );
-                          },
-                        ),
-                      ],
-                    ),
-                  ],
-                ),
+          ),
+        ),
+        Expanded(
+          flex: 6,
+          child: Container(color: Colors.white),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildBody() {
+    return Stack(
+      clipBehavior: Clip.none,
+      alignment: Alignment.topCenter,
+      children: [
+        SingleChildScrollView(
+          child: Column(
+            children: [
+              const SizedBox(height: 180), // Space for action buttons
+
+              // Search bar
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 20),
+                child: _buildSearchBar(),
               ),
+
+              const SizedBox(height: 20),
+
+              // Recent files
+              _buildRecentFilesSection(),
+
+              const SizedBox(height: 100), // Space for footer
+            ],
+          ),
+        ),
+        // Positioned action buttons
+        Positioned(
+          top: 20,
+          left: 20,
+          right: 20,
+          child: _buildMainActionButtons(),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildHeader() {
+    return Padding(
+      padding: const EdgeInsets.all(20),
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              IconButton(
+                icon: const Icon(Icons.menu, color: Colors.white, size: 28),
+                onPressed: () {
+                  // TODO: Implement drawer
+                },
+              ),
+              IconButton(
+                icon: const Icon(Icons.logout, color: Colors.white, size: 24),
+                onPressed: () async {
+                  // Implement logout functionality
+                  final userProvider = Provider.of<UserProvider>(context, listen: false);
+                  await userProvider.signOut();
+                  if (!mounted) return;
+                  
+                  // Navigate to sign in screen
+                  Navigator.of(context).pushReplacement(
+                    MaterialPageRoute(builder: (context) => const SignInScreen()),
+                  );
+                },
+              ),
+            ],
+          ),
+          Center(
+            child: Image.asset(
+              'assets/Scanmatelogo.png',
+              height: 70,
+              width: 70,
             ),
-          ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildMainActionButtons() {
+    return Container(
+      height: 120,
+      padding: const EdgeInsets.symmetric(vertical: 20, horizontal: 15),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(7),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.1),
+            blurRadius: 10,
+            offset: const Offset(0, 5),
+          ),
+        ],
+      ),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: [
+          // Scan button
+          _buildActionButton(
+            label: 'Scan',
+            color: const Color(0xFFFF6B47), // Orange
+            icon: Icons.crop_free_outlined,
+            onTap: scanDocument,
+          ),
+          
+          // Cover button
+          _buildActionButton(
+            label: 'Cover',
+            color: const Color(0xFFFF1744), // Pink/Red
+            icon: Icons.shield_outlined,
+            onTap: scanWithCoverPage,
+          ),
+          
+          // AI button
+          _buildActionButton(
+            label: 'AI',
+            color: const Color(0xFF2196F3), // Blue
+            icon: Icons.smart_toy_outlined,
+            onTap: _openAISetup,
+          ),
+          
+          // Settings button
+          _buildActionButton(
+            label: 'Settings',
+            color: const Color(0xFFFF9800), // Orange/Amber
+            icon: Icons.settings,
+            onTap: () {
+              // TODO: Implement settings
+            },
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildActionButton({
+    required String label,
+    required Color color,
+    required IconData icon,
+    required VoidCallback onTap,
+  }) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Column(
+        children: [
+          Container(
+            width: 50,
+            height: 50,
+            decoration: BoxDecoration(
+              color: color,
+              borderRadius: BorderRadius.circular(25),
+            ),
+            child: Icon(
+              icon,
+              color: Colors.white,
+              size: 20,
+            ),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            label,
+            textAlign: TextAlign.center,
+            style: const TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.w500,
+              color: Colors.black87,
+              height: 1.2,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSearchBar() {
+    return Container(
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.grey.withOpacity(0.2)),
+        color: Colors.grey[50],
+      ),
+      child: TextField(
+        controller: _searchController,
+        onChanged: (value) {
+          // Filter downloaded files based on search
+          setState(() {
+            // Implement search filtering
+          });
+        },
+        decoration: InputDecoration(
+          hintText: 'Search',
+          hintStyle: TextStyle(color: Colors.grey[600], fontSize: 14),
+          prefixIcon: null,
+          border: InputBorder.none,
+          contentPadding: const EdgeInsets.symmetric(vertical: 15, horizontal: 15),
+          suffixIcon: Container(
+            margin: const EdgeInsets.all(6),
+            decoration: BoxDecoration(
+              color: const Color(0xFF504AF2), // Match the gradient end color
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: const Icon(Icons.search, color: Colors.white, size: 20),
+          ),
         ),
       ),
     );
   }
-}
 
-class _MenuCard extends StatelessWidget {
-  final IconData icon;
-  final String title;
-  final VoidCallback onTap;
-
-  const _MenuCard({
-    required this.icon,
-    required this.title,
-    required this.onTap,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Material(
-      color: Colors.transparent,
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(20),
-        child: Container(
-          padding: const EdgeInsets.all(20),
-          decoration: BoxDecoration(
-            color: Theme.of(context).colorScheme.primary.withOpacity(0.1),
-            borderRadius: BorderRadius.circular(20),
-            border: Border.all(
-              color: Theme.of(context).colorScheme.primary.withOpacity(0.2),
-              width: 1,
+  Widget _buildRecentFilesSection() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 20),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              const Text(
+                'Recent Files',
+                style: TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.bold,
+                  color: Colors.black87,
+                ),
+              ),
+              Icon(Icons.arrow_forward, color: Colors.grey[600]),
+            ],
+          ),
+        ),
+        const SizedBox(height: 15),
+        _downloadedFiles.isEmpty
+            ? Center(
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 30),
+                  child: Text(
+                    'No files found',
+                    style: TextStyle(color: Colors.grey[600]),
+                  ),
+                ),
+              )
+            : ListView.builder(
+                shrinkWrap: true,
+                physics: const NeverScrollableScrollPhysics(),
+                padding: const EdgeInsets.symmetric(horizontal: 20),
+                itemCount: _downloadedFiles.length > 3 ? 3 : _downloadedFiles.length, // Limit to 3 items
+                itemBuilder: (context, index) {
+                  final file = _downloadedFiles[index] as File;
+                  return _buildFileListItem(file);
+                },
+              ),
+      ],
+    );
+  }
+  
+  Widget _buildFileListItem(File file) {
+    final fileName = path.basename(file.path);
+    final lastModified = file.lastModifiedSync();
+    
+    return Container(
+      margin: const EdgeInsets.only(bottom: 15),
+      padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 15),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: Colors.grey.withOpacity(0.1)),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.03),
+            blurRadius: 8,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
+      child: Row(
+        children: [
+          // Document thumbnail
+          Container(
+            width: 50,
+            height: 70,
+            decoration: BoxDecoration(
+              color: Colors.grey[100],
+              borderRadius: BorderRadius.circular(5),
+            ),
+            child: const Icon(Icons.insert_drive_file, color: Colors.grey),
+          ),
+          const SizedBox(width: 15),
+          // File details
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  fileName.replaceAll('.pdf', '').replaceAll('_', ' '),
+                  style: const TextStyle(
+                    fontWeight: FontWeight.bold,
+                    fontSize: 16,
+                  ),
+                ),
+                const SizedBox(height: 5),
+                Text(
+                  '${lastModified.day}/${lastModified.month}/${lastModified.year}  ${lastModified.hour.toString().padLeft(2, '0')}:${lastModified.minute.toString().padLeft(2, '0')}',
+                  style: TextStyle(
+                    color: Colors.grey[600],
+                    fontSize: 12,
+                  ),
+                ),
+              ],
             ),
           ),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
+          // Action buttons
+          Row(
             children: [
-              Icon(
-                icon,
-                size: 40,
-                color: Theme.of(context).colorScheme.primary,
+              IconButton(
+                icon: const Icon(Icons.share, size: 20),
+                onPressed: () => _shareFile(file),
               ),
-              const SizedBox(height: 12),
-              Text(
-                title,
-                textAlign: TextAlign.center,
-                style: GoogleFonts.poppins(
-                  fontSize: 16,
-                  fontWeight: FontWeight.w600,
-                  color: Theme.of(context).colorScheme.primary,
-                  height: 1.2,
+              IconButton(
+                icon: const Icon(Icons.more_vert, size: 20),
+                onPressed: () {
+                  showModalBottomSheet(
+                    context: context,
+                    builder: (context) => _buildFileActionsSheet(file),
+                  );
+                },
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+  
+  Widget _buildFileActionsSheet(File file) {
+    return Container(
+      padding: const EdgeInsets.symmetric(vertical: 20),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          ListTile(
+            leading: const Icon(Icons.share),
+            title: const Text('Share'),
+            onTap: () {
+              Navigator.pop(context);
+              _shareFile(file);
+            },
+          ),
+          ListTile(
+            leading: const Icon(Icons.delete, color: Colors.red),
+            title: const Text('Delete', style: TextStyle(color: Colors.red)),
+            onTap: () {
+              Navigator.pop(context);
+              _deleteFile(file);
+            },
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildFileCard(File file) {
+    final fileName = path.basename(file.path);
+    final fileSize = file.lengthSync();
+    final fileSizeKB = (fileSize / 1024).round();
+    final lastModified = file.lastModifiedSync();
+    
+    return Container(
+      width: 200,
+      margin: const EdgeInsets.only(right: 15),
+      padding: const EdgeInsets.all(15),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(15),
+        border: Border.all(color: Colors.grey.withOpacity(0.2)),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.05),
+            blurRadius: 5,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                          width: 40,
+                          height: 40,
+                          decoration: BoxDecoration(
+                  color: Colors.red.withOpacity(0.1),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: const Icon(
+                  Icons.picture_as_pdf,
+                  color: Colors.red,
+                  size: 20,
+                ),
+              ),
+              const Spacer(),
+              PopupMenuButton(
+                icon: const Icon(Icons.more_horiz, size: 18),
+                itemBuilder: (context) => [
+                  PopupMenuItem(
+                    child: const Text('Share'),
+                    onTap: () => _shareFile(file),
+                  ),
+                  PopupMenuItem(
+                    child: const Text('Delete'),
+                    onTap: () => _deleteFile(file),
+                      ),
+                    ],
+                  ),
+            ],
+                ),
+          const SizedBox(height: 10),
+                Text(
+            fileName.length > 20 ? '${fileName.substring(0, 17)}...' : fileName,
+            style: const TextStyle(
+              fontWeight: FontWeight.w600,
+              fontSize: 14,
+            ),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+                ),
+          const SizedBox(height: 5),
+                Text(
+            '${lastModified.day}/${lastModified.month}/${lastModified.year}  ${lastModified.hour.toString().padLeft(2, '0')}:${lastModified.minute.toString().padLeft(2, '0')}',
+                  style: TextStyle(
+              color: Colors.grey[600],
+              fontSize: 11,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildFloatingFooter() {
+    return Stack(
+      alignment: Alignment.center,
+      children: [
+        // Bottom navigation bar
+        Container(
+          margin: const EdgeInsets.symmetric(horizontal: 20),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              // Left side toggle buttons
+              Expanded(
+                child: Container(
+                  height: 50,
+                  padding: const EdgeInsets.all(4),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF0D062C), // Dark blue from gradient
+                    borderRadius: BorderRadius.circular(25),
+                  ),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                    children: [
+                      _buildToggleButton(Icons.layers, 0, isSelected: _bottomNavIndex == 0),
+                      _buildToggleButton(Icons.folder, 1, isSelected: _bottomNavIndex == 1),
+                      _buildToggleButton(Icons.person, 2, isSelected: _bottomNavIndex == 2),
+                    ],
+                  ),
                 ),
               ),
             ],
           ),
+        ),
+        
+        // Center scan button
+        Container(
+          height: 60,
+          width: 60,
+          decoration: BoxDecoration(
+            color: const Color(0xFF504AF2),
+            shape: BoxShape.circle,
+            boxShadow: [
+              BoxShadow(
+                color: const Color(0xFF504AF2).withOpacity(0.3),
+                blurRadius: 10,
+                spreadRadius: 2,
+                offset: const Offset(0, 2),
+              ),
+            ],
+          ),
+          child: IconButton(
+            icon: const Icon(Icons.add, color: Colors.white, size: 30),
+            onPressed: scanDocument,
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildToggleButton(IconData icon, int index, {required bool isSelected}) {
+    return GestureDetector(
+      onTap: () {
+        setState(() {
+          _bottomNavIndex = index;
+        });
+      },
+      child: Container(
+        width: 40,
+        height: 40,
+        decoration: BoxDecoration(
+          color: isSelected ? const Color(0xFF504AF2) : Colors.transparent,
+          shape: BoxShape.circle,
+        ),
+        child: Icon(
+          icon,
+          color: Colors.white,
+          size: 22,
+        ),
+      ),
+    );
+  }
+
+  Future<void> _shareFile(File file) async {
+    try {
+      await Share.shareXFiles([XFile(file.path)]);
+    } catch (e) {
+      print('Error sharing file: $e');
+    }
+  }
+
+  Future<void> _deleteFile(File file) async {
+    try {
+      await file.delete();
+      _loadDownloadedFiles(); // Refresh the list
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('File deleted successfully')),
+        );
+      }
+    } catch (e) {
+      print('Error deleting file: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Error deleting file')),
+        );
+      }
+    }
+  }
+
+  Widget _buildIconButton({
+    required BuildContext context,
+    required String label,
+    required Color color,
+    required VoidCallback onTap,
+    required IconData fallbackIcon,
+  }) {
+    final bool isDarkMode = Theme.of(context).brightness == Brightness.dark;
+    
+    return GestureDetector(
+      onTap: onTap,
+      child: Column(
+        children: [
+          Container(
+            width: 60,
+            height: 60,
+            decoration: BoxDecoration(
+              color: color,
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Center(
+              child: Icon(
+                fallbackIcon,
+                color: Colors.white,
+                size: 30,
+              ),
+            ),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            label,
+            style: TextStyle(
+              fontSize: 12,
+              color: isDarkMode ? Colors.white70 : Colors.black87,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildRecentFilesList() {
+    final bool isDarkMode = Theme.of(context).brightness == Brightness.dark;
+    
+    if (_scannedDocuments == null) {
+      return Container(
+        padding: const EdgeInsets.all(20),
+        decoration: BoxDecoration(
+          color: isDarkMode ? Colors.grey[850] : Colors.white,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: Colors.grey.withOpacity(0.2)),
+        ),
+        child: Center(
+          child: Text(
+            'No recent files',
+            style: TextStyle(
+              color: isDarkMode ? Colors.white70 : Colors.grey,
+            ),
+          ),
+        ),
+      );
+    }
+    
+    // Mock data for recent files
+    return ListView.builder(
+      shrinkWrap: true,
+      physics: const NeverScrollableScrollPhysics(),
+      itemCount: 3,
+      itemBuilder: (context, index) {
+        return Container(
+          margin: const EdgeInsets.only(bottom: 10),
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(
+            color: isDarkMode ? Colors.grey[850] : Colors.white,
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: Colors.grey.withOpacity(0.2)),
+          ),
+          child: Row(
+            children: [
+              Container(
+                width: 40,
+                height: 40,
+                decoration: BoxDecoration(
+                  color: Colors.blue.withOpacity(0.1),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Icon(Icons.picture_as_pdf, color: Colors.blue),
+              ),
+              const SizedBox(width: 15),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Document_${index + 1}.pdf',
+                      style: TextStyle(
+                        fontWeight: FontWeight.bold,
+                        color: isDarkMode ? Colors.white : Colors.black87,
+                      ),
+                    ),
+                    Text(
+                      'Modified: ${DateTime.now().toString().split('.')[0]}',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: Colors.grey,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              IconButton(
+                icon: Icon(Icons.more_vert, color: isDarkMode ? Colors.white70 : Colors.grey),
+                onPressed: () {},
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildDownloadedFilesList() {
+    final bool isDarkMode = Theme.of(context).brightness == Brightness.dark;
+    
+    // Mock data for downloaded files
+    return ListView.builder(
+      shrinkWrap: true,
+      physics: const NeverScrollableScrollPhysics(),
+      itemCount: 2,
+      itemBuilder: (context, index) {
+        return Container(
+          margin: const EdgeInsets.only(bottom: 10),
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(
+            color: isDarkMode ? Colors.grey[850] : Colors.white,
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: Colors.grey.withOpacity(0.2)),
+          ),
+          child: Row(
+            children: [
+              Container(
+                width: 40,
+                height: 40,
+                decoration: BoxDecoration(
+                  color: Colors.green.withOpacity(0.1),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Icon(Icons.download_done, color: Colors.green),
+              ),
+              const SizedBox(width: 15),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Downloaded_${index + 1}.pdf',
+                      style: TextStyle(
+                        fontWeight: FontWeight.bold,
+                        color: isDarkMode ? Colors.white : Colors.black87,
+                      ),
+                    ),
+                    Text(
+                      'Downloaded: ${DateTime.now().toString().split('.')[0]}',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: Colors.grey,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              IconButton(
+                icon: Icon(Icons.share, color: isDarkMode ? Colors.white70 : Colors.grey),
+                onPressed: () {},
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildBottomBar() {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(20, 8, 20, 20),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          _buildBottomNavToggle(),
+          FloatingActionButton(
+            backgroundColor: Colors.black,
+            foregroundColor: Colors.white,
+            onPressed: scanDocument,
+            child: const Icon(Icons.add),
+          )
+        ],
+      ),
+    );
+  }
+
+  Widget _buildBottomNavToggle() {
+    return Container(
+      padding: const EdgeInsets.all(4),
+      decoration: BoxDecoration(
+        color: Colors.black,
+        borderRadius: BorderRadius.circular(30),
+      ),
+      child: Row(
+        children: [
+          _buildToggleItem(Icons.layers_outlined, 0),
+          _buildToggleItem(Icons.person_outline, 1),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildToggleItem(IconData icon, int index) {
+    final bool isSelected = _bottomNavIndex == index;
+    return GestureDetector(
+      onTap: () {
+        setState(() {
+          _bottomNavIndex = index;
+        });
+      },
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+        decoration: BoxDecoration(
+          color: isSelected ? Colors.white : Colors.transparent,
+          borderRadius: BorderRadius.circular(30),
+        ),
+        child: Icon(
+          icon,
+          color: isSelected ? Colors.black : Colors.white,
         ),
       ),
     );

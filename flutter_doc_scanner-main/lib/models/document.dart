@@ -8,6 +8,7 @@ class Document {
   final List<String> tags;
   final DocumentType type;
   final String? driveId;  // Google Drive file ID
+  final String? pdfPath;  // Direct path to PDF from ML Kit
 
   Document({
     required this.id,
@@ -17,9 +18,12 @@ class Document {
     this.tags = const [],
     this.type = DocumentType.other,
     this.driveId,
+    this.pdfPath,
   });
 
   String get firstPagePath => pages.isNotEmpty ? pages.first.path : '';
+  
+  bool get hasDirectPdf => pdfPath != null && pdfPath!.isNotEmpty;
 
   Document copyWith({
     String? id,
@@ -29,6 +33,7 @@ class Document {
     List<String>? tags,
     DocumentType? type,
     String? driveId,
+    String? pdfPath,
   }) {
     return Document(
       id: id ?? this.id,
@@ -38,6 +43,7 @@ class Document {
       tags: tags ?? this.tags,
       type: type ?? this.type,
       driveId: driveId ?? this.driveId,
+      pdfPath: pdfPath ?? this.pdfPath,
     );
   }
 
@@ -50,6 +56,7 @@ class Document {
       'tags': tags,
       'type': type.toString(),
       'driveId': driveId,
+      'pdfPath': pdfPath,
     };
   }
 
@@ -65,6 +72,7 @@ class Document {
         orElse: () => DocumentType.other,
       ),
       driveId: json['driveId'] as String?,
+      pdfPath: json['pdfPath'] as String?,
     );
   }
 }

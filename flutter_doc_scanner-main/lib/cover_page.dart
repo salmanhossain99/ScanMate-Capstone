@@ -83,6 +83,197 @@ class CoverPageData {
   }
 }
 
+// Function to get saved cover page information
+Future<Map<String, String>> getLastCoverPageInfo() async {
+  try {
+    final prefs = await SharedPreferences.getInstance();
+    
+    return {
+      'name': prefs.getString('cover_page_name') ?? 'Student Name',
+      'email': prefs.getString('cover_page_email') ?? 'student@email.com',
+      'studentId': prefs.getString('cover_page_studentId') ?? '12345',
+      'courseName': prefs.getString('cover_page_courseName') ?? 'Course Name',
+    };
+  } catch (e) {
+    print('Error retrieving cover page info: $e');
+    return {
+      'name': 'Student Name',
+      'email': 'student@email.com',
+      'studentId': '12345',
+      'courseName': 'Course Name',
+    };
+  }
+}
+
+/// Saves the cover page information to persistent storage
+Future<void> saveCoverPageInfo(Map<String, String> info) async {
+  try {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('cover_page_name', info['name'] ?? '');
+    await prefs.setString('cover_page_email', info['email'] ?? '');
+    await prefs.setString('cover_page_studentId', info['studentId'] ?? '');
+    await prefs.setString('cover_page_courseName', info['courseName'] ?? '');
+    print('Cover page info saved successfully');
+  } catch (e) {
+    print('Error saving cover page info: $e');
+  }
+}
+
+// Generate a PDF with cover page and content from existing documents
+Future<String?> generateCoverPageForDocuments(
+  List<String> documentPaths, 
+  Map<String, String> coverInfo,
+) async {
+  try {
+    print('\n=== GENERATE PDF WITH COVER PAGE ===');
+    print('Generating PDF with cover page for ${documentPaths.length} documents');
+    print('Document paths: ${documentPaths.join(', ')}');
+    print('Cover info: $coverInfo');
+    
+    // Create PDF document
+    final pdf = pw.Document();
+    
+    // Load logo if available
+    pw.MemoryImage? logoImage;
+    try {
+      final ByteData logoData = await rootBundle.load('assets/nsu_logo.png');
+      final Uint8List logoBytes = logoData.buffer.asUint8List();
+      logoImage = pw.MemoryImage(logoBytes);
+      print('Logo loaded successfully');
+    } catch (e) {
+      print('Could not load logo: $e');
+    }
+
+    // Add cover page
+    pdf.addPage(
+      pw.Page(
+        build: (pw.Context context) {
+          return pw.Column(
+            crossAxisAlignment: pw.CrossAxisAlignment.start,
+            children: [
+              if (logoImage != null) 
+                pw.Center(child: pw.Image(logoImage, width: 100, height: 100)),
+              pw.SizedBox(height: 20),
+              pw.Center(
+                child: pw.Text(
+                  'North South University',
+                  style: pw.TextStyle(fontSize: 18, fontWeight: pw.FontWeight.bold),
+                ),
+              ),
+              pw.Center(
+                child: pw.Text(
+                  'Department of Electrical and Computer Engineering',
+                  style: pw.TextStyle(fontSize: 12),
+                ),
+              ),
+              pw.SizedBox(height: 40),
+              pw.Text('Name: ${coverInfo['name'] ?? ''}'),
+              pw.SizedBox(height: 10),
+              pw.Text('Email: ${coverInfo['email'] ?? ''}'),
+              pw.SizedBox(height: 10),
+              pw.Text('Student ID: ${coverInfo['studentId'] ?? ''}'),
+              pw.SizedBox(height: 10),
+              pw.Text('Course: ${coverInfo['courseName'] ?? ''}'),
+              pw.SizedBox(height: 40),
+              pw.Center(
+                child: pw.Text(
+                  'DOCUMENT',
+                  style: pw.TextStyle(fontSize: 16, fontWeight: pw.FontWeight.bold),
+                ),
+              ),
+              pw.SizedBox(height: 20),
+              pw.Center(
+                child: pw.Text(
+                  'Generated: ${DateTime.now().toString().split('.')[0]}',
+                  style: pw.TextStyle(fontSize: 12),
+                ),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+    
+    print('Cover page added, now adding ${documentPaths.length} document pages');
+    
+    // Add document pages with page numbers
+    for (int i = 0; i < documentPaths.length; i++) {
+      final documentPath = documentPaths[i];
+      final pageNumber = i + 1; // Page number starts at 1 after cover page
+      try {
+        print('Processing document $i: $documentPath');
+        final File file = File(documentPath);
+        if (await file.exists()) {
+          print('  File exists, reading bytes');
+          final bytes = await file.readAsBytes();
+          
+          if (bytes.isNotEmpty) {
+            print('  File is not empty (${bytes.length} bytes)');
+            print('  File header: ${bytes.take(10).map((e) => e.toRadixString(16).padLeft(2, '0')).join(' ')}');
+            
+            // Always process as image to ensure consistency
+            print('  Adding as image with page number');
+            final image = pw.MemoryImage(bytes);
+            pdf.addPage(
+              pw.Page(
+                build: (context) => pw.Stack(
+                  children: [
+                    // Image centered on the page
+                    pw.Center(
+                      child: pw.Image(image),
+                    ),
+                    // Page number in bottom right corner
+                    pw.Positioned(
+                      bottom: 10,
+                      right: 10,
+                      child: pw.Container(
+                        padding: const pw.EdgeInsets.all(4),
+                        decoration: pw.BoxDecoration(
+                          color: PdfColor.fromInt(0xAA000000),
+                          borderRadius: const pw.BorderRadius.all(pw.Radius.circular(4)),
+                        ),
+                        child: pw.Text(
+                          '$pageNumber',
+                          style: pw.TextStyle(
+                            color: PdfColor.fromInt(0xFFFFFFFF),
+                            fontSize: 14,
+                            fontWeight: pw.FontWeight.bold,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            );
+            print('  Added as image with page number $pageNumber');
+          } else {
+            print('  File is empty');
+          }
+        } else {
+          print('  File does not exist: $documentPath');
+        }
+      } catch (e) {
+        print('  Error processing document $documentPath: $e');
+      }
+    }
+    
+    // Save the document
+    print('Saving final PDF with ${pdf.document.pdfPageList.pages.length} pages');
+    final output = await getTemporaryDirectory();
+    final filePath = '${output.path}/document_with_cover_${DateTime.now().millisecondsSinceEpoch}.pdf';
+    final file = File(filePath);
+    await file.writeAsBytes(await pdf.save());
+    
+    print('PDF with cover page saved to: $filePath');
+    print('=== END GENERATE PDF WITH COVER PAGE ===\n');
+    return filePath;
+  } catch (e) {
+    print('Error generating PDF with cover page: $e');
+    return null;
+  }
+}
+
 class CoverPageScreen extends StatefulWidget {
   final List<dynamic> scannedDocuments;
   final VoidCallback? onComplete;

@@ -5,25 +5,49 @@ import 'package:provider/provider.dart';
 import 'providers/user_provider.dart';
 import 'screens/sign_in_screen.dart';
 import 'screens/home_screen.dart';
+import 'package:flutter_doc_scanner/services/image_cache_service.dart';
 
 // Custom theme colors
 class AppColors {
-  static const primary = Color(0xFF6B3FA0); // Deep Purple
-  static const secondary = Color(0xFF8952D0); // Light Purple
-  static const background = Color(0xFF6B3FA0); // Deep Purple
+  // Updated gradient colors
+  static const gradientStart = Color(0xFF0D062C); // Dark blue start
+  static const gradientMiddle = Color(0xFF282467); // Middle purple
+  static const gradientEnd = Color(0xFF504AF2); // Bright purple end
+  
+  // Deep blue colors for cover page
+  static const deepBlueStart = Color(0xFF1E3A8A);
+  static const deepBlueEnd = Color(0xFF3B82F6);
+  
+  static const primary = gradientStart;
+  static const secondary = gradientMiddle;
+  static const background = gradientStart;
   static const cardBackground = Colors.white;
   static const text = Colors.white;
-  static const cardText = Color(0xFF6B3FA0);
+  static const cardText = gradientStart;
 }
 
-void main() {
+void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  SystemChrome.setSystemUIOverlayStyle(
-    const SystemUiOverlayStyle(
-      statusBarColor: Colors.transparent,
-      statusBarIconBrightness: Brightness.light,
-    ),
-  );
+  
+  // Set preferred orientations
+  await SystemChrome.setPreferredOrientations([
+    DeviceOrientation.portraitUp,
+    DeviceOrientation.portraitDown,
+  ]);
+  
+  // Initialize cache service
+  final cacheService = ImageCacheService();
+  
+  // Clear previous cache on startup for clean state
+  await cacheService.clearCache();
+
+  // Add a very obvious log message to verify our changes are loaded
+  print('\n\n');
+  print('=====================================================');
+  print('OPTIMIZED CODE IS LOADED - PDF GENERATION SHOULD BE FAST');
+  print('=====================================================');
+  print('\n\n');
+  
   runApp(
     ChangeNotifierProvider(
       create: (_) => UserProvider()..initialize(),
