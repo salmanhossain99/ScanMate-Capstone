@@ -93,6 +93,9 @@ Future<Map<String, String>> getLastCoverPageInfo() async {
       'email': prefs.getString('cover_page_email') ?? 'student@email.com',
       'studentId': prefs.getString('cover_page_studentId') ?? '12345',
       'courseName': prefs.getString('cover_page_courseName') ?? 'Course Name',
+      'assignmentNumber': prefs.getString('cover_page_assignmentNumber') ?? '1',
+      'section': prefs.getString('cover_page_section') ?? '',
+      'submittedTo': prefs.getString('cover_page_submittedTo') ?? '',
     };
   } catch (e) {
     print('Error retrieving cover page info: $e');
@@ -101,6 +104,9 @@ Future<Map<String, String>> getLastCoverPageInfo() async {
       'email': 'student@email.com',
       'studentId': '12345',
       'courseName': 'Course Name',
+      'assignmentNumber': '1',
+      'section': '',
+      'submittedTo': '',
     };
   }
 }
@@ -113,6 +119,9 @@ Future<void> saveCoverPageInfo(Map<String, String> info) async {
     await prefs.setString('cover_page_email', info['email'] ?? '');
     await prefs.setString('cover_page_studentId', info['studentId'] ?? '');
     await prefs.setString('cover_page_courseName', info['courseName'] ?? '');
+    await prefs.setString('cover_page_assignmentNumber', info['assignmentNumber'] ?? '1');
+    await prefs.setString('cover_page_section', info['section'] ?? '');
+    await prefs.setString('cover_page_submittedTo', info['submittedTo'] ?? '');
     print('Cover page info saved successfully');
   } catch (e) {
     print('Error saving cover page info: $e');
@@ -151,22 +160,23 @@ Future<String?> generateCoverPageForDocuments(
           return pw.Column(
             crossAxisAlignment: pw.CrossAxisAlignment.start,
             children: [
-              if (logoImage != null) 
-                pw.Center(child: pw.Image(logoImage, width: 100, height: 100)),
-              pw.SizedBox(height: 20),
+              pw.SizedBox(height: 60),
+              if (logoImage != null)
+                pw.Center(child: pw.Image(logoImage, width: 140, height: 140)),
+              pw.SizedBox(height: 24),
               pw.Center(
                 child: pw.Text(
                   'North South University',
-                  style: pw.TextStyle(fontSize: 18, fontWeight: pw.FontWeight.bold),
+                  style: pw.TextStyle(fontSize: 22, fontWeight: pw.FontWeight.bold),
                 ),
               ),
               pw.Center(
                 child: pw.Text(
                   'Department of Electrical and Computer Engineering',
-                  style: pw.TextStyle(fontSize: 12),
+                  style: pw.TextStyle(fontSize: 14),
                 ),
               ),
-              pw.SizedBox(height: 40),
+              pw.SizedBox(height: 50),
               pw.Text('Name: ${coverInfo['name'] ?? ''}'),
               pw.SizedBox(height: 10),
               pw.Text('Email: ${coverInfo['email'] ?? ''}'),
@@ -174,20 +184,19 @@ Future<String?> generateCoverPageForDocuments(
               pw.Text('Student ID: ${coverInfo['studentId'] ?? ''}'),
               pw.SizedBox(height: 10),
               pw.Text('Course: ${coverInfo['courseName'] ?? ''}'),
-              pw.SizedBox(height: 40),
+              pw.SizedBox(height: 10),
+              pw.Text('Section: ${coverInfo['section'] ?? ''}'),
+              pw.SizedBox(height: 30),
               pw.Center(
                 child: pw.Text(
-                  'DOCUMENT',
-                  style: pw.TextStyle(fontSize: 16, fontWeight: pw.FontWeight.bold),
+                  'ASSIGNMENT ${coverInfo['assignmentNumber'] ?? '1'}',
+                  style: pw.TextStyle(fontSize: 18, fontWeight: pw.FontWeight.bold),
                 ),
               ),
-              pw.SizedBox(height: 20),
-              pw.Center(
-                child: pw.Text(
-                  'Generated: ${DateTime.now().toString().split('.')[0]}',
-                  style: pw.TextStyle(fontSize: 12),
-                ),
-              ),
+              pw.SizedBox(height: 16),
+              pw.Text('Submitted To: ${coverInfo['submittedTo'] ?? ''}'),
+              pw.SizedBox(height: 10),
+              pw.Text('Submission Date: ${DateTime.now().toString().split(' ')[0]}'),
             ],
           );
         },

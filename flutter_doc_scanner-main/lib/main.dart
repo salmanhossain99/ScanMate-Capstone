@@ -2,13 +2,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter_doc_scanner/screens/home_screen.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_doc_scanner/services/image_cache_service.dart';
-import 'package:flutter_doc_scanner/services/env_service.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  
-  // Initialize environment variables
-  await EnvService().initialize();
   
   // Set preferred orientations
   await SystemChrome.setPreferredOrientations([

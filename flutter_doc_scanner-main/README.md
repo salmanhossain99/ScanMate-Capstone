@@ -1,6 +1,6 @@
-# ScanMate - AI-Powered Document Scanner
+# flutter_doc_scanner
 
-An intelligent Flutter document scanner with offline AI summarization powered by Google's Gemma 3 model. Features ML Kit Document Scanner API and VisionKit integration.
+A Flutter plugin for document scanning on Android, iOS, and Web using ML Kit Document Scanner API and VisionKit.
 
 [![pub package](https://img.shields.io/pub/v/flutter_doc_scanner.svg)](https://pub.dev/packages/flutter_doc_scanner)
 

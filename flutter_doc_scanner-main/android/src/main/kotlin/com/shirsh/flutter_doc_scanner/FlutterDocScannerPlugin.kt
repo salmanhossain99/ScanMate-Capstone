@@ -39,6 +39,7 @@ import java.io.FileOutputStream
 import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
 import android.content.ContentValues
+import android.provider.DocumentsContract
 
 class FlutterDocScannerPlugin : MethodCallHandler, ActivityResultListener,
     FlutterPlugin, ActivityAware {
@@ -54,6 +55,7 @@ class FlutterDocScannerPlugin : MethodCallHandler, ActivityResultListener,
     private val REQUEST_CODE_SCAN_URI = 214412
     private val REQUEST_CODE_SCAN_IMAGES = 215512
     private val REQUEST_CODE_SCAN_PDF = 216612
+    private val REQUEST_CODE_PICK_PDF = 217712
     private lateinit var resultChannel: MethodChannel.Result
     private var lastMethodCall: MethodCall? = null
 
@@ -72,7 +74,32 @@ class FlutterDocScannerPlugin : MethodCallHandler, ActivityResultListener,
             "getScannedDocumentAsImages" -> startDocumentScanImages(page)
             "getScannedDocumentAsPdf" -> startDocumentScanPDF(page)
             "getScanDocumentsUri" -> startDocumentScanUri(page)
+            "pickPdfFromScanMate" -> openPdfPickerAtScanMate()
             else -> result.notImplemented()
+        }
+    }
+
+    private fun openPdfPickerAtScanMate() {
+        try {
+            val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                addCategory(Intent.CATEGORY_OPENABLE)
+                type = "application/pdf"
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                addFlags(Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
+                // Try to start in Download/ScanMate
+                val scanMate = Uri.parse("content://com.android.externalstorage.documents/document/primary:Download/ScanMate")
+                putExtra(DocumentsContract.EXTRA_INITIAL_URI, scanMate)
+            }
+            activity?.startActivityForResult(intent, REQUEST_CODE_PICK_PDF)
+        } catch (e: Exception) {
+            // Fallback to generic picker
+            val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                addCategory(Intent.CATEGORY_OPENABLE)
+                type = "application/pdf"
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                addFlags(Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
+            }
+            activity?.startActivityForResult(intent, REQUEST_CODE_PICK_PDF)
         }
     }
 
@@ -108,16 +135,14 @@ class FlutterDocScannerPlugin : MethodCallHandler, ActivityResultListener,
     }
 
     private fun startDocumentScanImages(page: Int = 4) {
-        // Optimize options for speed
+        // Optimize options for speed while respecting requested page limit
         val options = GmsDocumentScannerOptions.Builder()
-            .setGalleryImportAllowed(false) // Disable gallery to speed up
-            .setPageLimit(1) // Set to 1 page for faster processing
-                .setResultFormats(
-                GmsDocumentScannerOptions.RESULT_FORMAT_JPEG
-            ) // Only JPEG format
+            .setGalleryImportAllowed(false) // Keep existing behavior
+            .setPageLimit(page) // Respect requested page limit
+            .setResultFormats(GmsDocumentScannerOptions.RESULT_FORMAT_JPEG) // Only JPEG format
             .setScannerMode(GmsDocumentScannerOptions.SCANNER_MODE_FULL)
             .build()
-            
+
         val scanner = GmsDocumentScanning.getClient(options)
         val task: Task<IntentSender>? = activity?.let { scanner.getStartScanIntent(it) }
         task?.addOnSuccessListener { intentSender ->
@@ -262,12 +287,19 @@ class FlutterDocScannerPlugin : MethodCallHandler, ActivityResultListener,
                 if (resultCode == Activity.RESULT_OK) {
                     val scanningResult = GmsDocumentScanningResult.fromActivityResultIntent(data)
                     scanningResult?.getPages()?.let { pages ->
-                        resultChannel.success(
-                            mapOf(
-                                "Uri" to pages.toString(),
-                                "Count" to pages.size,
-                            )
-                        )
+                        // Process images on a background thread and return a List<String> of file paths
+                        Thread {
+                            val imagePaths = ArrayList<String>(pages.size)
+                            for (page in pages) {
+                                val path = processScanResultFaster(page.imageUri)
+                                if (path != null) {
+                                    imagePaths.add(path)
+                                }
+                            }
+                            activity?.runOnUiThread {
+                                resultChannel.success(imagePaths)
+                            }
+                        }.start()
                     } ?: resultChannel.error("SCAN_FAILED", "No image results returned", null)
                 } else if (resultCode == Activity.RESULT_CANCELED) {
                     resultChannel.success(null)
@@ -438,6 +470,40 @@ class FlutterDocScannerPlugin : MethodCallHandler, ActivityResultListener,
                     } ?: resultChannel.error("SCAN_FAILED", "No URI results returned", null)
                 } else if (resultCode == Activity.RESULT_CANCELED) {
                     Log.d(TAG, "Scan cancelled by user")
+                    resultChannel.success(null)
+                }
+            }
+            REQUEST_CODE_PICK_PDF -> {
+                if (resultCode == Activity.RESULT_OK && data != null) {
+                    val uri = data.data
+                    if (uri != null) {
+                        // Persist permission so we can read later
+                        activity?.contentResolver?.takePersistableUriPermission(
+                            uri,
+                            Intent.FLAG_GRANT_READ_URI_PERMISSION
+                        )
+                        // Copy to cache for consistent file access in Dart
+                        Thread {
+                            try {
+                                val input = activity?.contentResolver?.openInputStream(uri)
+                                val fileName = "picked_${System.currentTimeMillis()}.pdf"
+                                val outFile = File(applicationContext!!.cacheDir, fileName)
+                                FileOutputStream(outFile).use { os ->
+                                    input?.copyTo(os)
+                                }
+                                activity?.runOnUiThread {
+                                    resultChannel.success(outFile.absolutePath)
+                                }
+                            } catch (e: Exception) {
+                                activity?.runOnUiThread {
+                                    resultChannel.error("PICK_ERROR", "Failed to read selected PDF", e.toString())
+                                }
+                            }
+                        }.start()
+                    } else {
+                        resultChannel.error("PICK_ERROR", "No PDF selected", null)
+                    }
+                } else if (resultCode == Activity.RESULT_CANCELED) {
                     resultChannel.success(null)
                 }
             }

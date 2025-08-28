@@ -214,7 +214,7 @@ class _SummaryDisplayWidgetState extends State<SummaryDisplayWidget>
             child: Text(
               widget.summary.summary,
               style: TextStyle(
-                fontSize: 16,
+                fontSize: 14,
                 height: 1.6,
                 color: Colors.grey[800],
               ),
@@ -316,7 +316,7 @@ class _SummaryDisplayWidgetState extends State<SummaryDisplayWidget>
                     child: Text(
                       point,
                       style: TextStyle(
-                        fontSize: 15,
+                        fontSize: 13,
                         height: 1.5,
                         color: Colors.grey[800],
                       ),

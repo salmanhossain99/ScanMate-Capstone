@@ -129,9 +129,9 @@ class PdfService {
         throw Exception('No valid images to process');
       }
       
-    // ULTRA-AGGRESSIVE settings for maximum speed
-      const int targetWidth = 600; // Fixed width of 600px as requested
-      const int jpegQuality = 70; // 70% JPEG quality as requested
+    // Balanced settings for high quality with parallel processing
+      const int targetWidth = 1200; // Higher width for sharper text
+      const int jpegQuality = 85; // Slightly higher JPEG quality
       const bool useCompression = true; // Enable PDF compression for better results
     
       print('PDF OPTIMIZATION: Using settings: width=$targetWidth, quality=$jpegQuality, compression=$useCompression');
@@ -146,20 +146,49 @@ class PdfService {
     // Only add cover page if absolutely necessary
     if (coverPageInfo != null) {
         print('PDF OPTIMIZATION: Adding cover page');
-      // Use simplified cover page with minimal content
+      // Cover page with university header and metadata
       pdf.addPage(
         pw.Page(
           build: (context) {
-            return pw.Center(
+            final String assignmentNo = (coverPageInfo['assignmentNumber'] ?? '1').toString();
+            final String submittedTo = (coverPageInfo['submittedTo'] ?? '').toString();
+            final String name = (coverPageInfo['name'] ?? '').toString();
+            final String id = (coverPageInfo['studentId'] ?? '').toString();
+            final String course = (coverPageInfo['courseName'] ?? '').toString();
+            final String section = (coverPageInfo['section'] ?? '').toString();
+            final String dateStr = DateTime.now().toString().split(' ').first;
+
+            pw.Widget headerLogo = pw.SizedBox();
+            try {
+              // Try to load NSU logo
+              final ByteData logoData = rootBundle.load('assets/nsu_logo.png') as ByteData;
+              headerLogo = pw.Image(pw.MemoryImage(logoData.buffer.asUint8List()), height: 80);
+            } catch (_) {}
+
+            return pw.Padding(
+              padding: const pw.EdgeInsets.all(40),
               child: pw.Column(
-                mainAxisAlignment: pw.MainAxisAlignment.center,
+                crossAxisAlignment: pw.CrossAxisAlignment.start,
                 children: [
-                  pw.Text(
-                    'Document Scan',
-                    style: pw.TextStyle(fontSize: 20, fontWeight: pw.FontWeight.bold),
+                  pw.Center(child: headerLogo),
+                  pw.SizedBox(height: 12),
+                  pw.Center(
+                    child: pw.Column(children: [
+                      pw.Text('North South University', style: pw.TextStyle(fontSize: 18, fontWeight: pw.FontWeight.bold)),
+                      pw.SizedBox(height: 6),
+                      pw.Text('Department of Electrical and Computer Engineering', style: pw.TextStyle(fontSize: 12)),
+                    ]),
                   ),
-                  pw.SizedBox(height: 20),
-                  pw.Text('${DateTime.now().toString().split('.')[0]}'),
+                  pw.SizedBox(height: 28),
+                  _kv('Name:', name),
+                  _kv('ID:', id),
+                  _kv('Course:', course),
+                  _kv('Section:', section),
+                  pw.SizedBox(height: 28),
+                  pw.Center(child: pw.Text('ASSIGNMENT - $assignmentNo', style: pw.TextStyle(fontSize: 16, fontWeight: pw.FontWeight.bold))),
+                  pw.SizedBox(height: 16),
+                  _kv('Submitted To:', submittedTo.toUpperCase()),
+                  _kv('Submission Date:', dateStr),
                 ],
               ),
             );
@@ -724,6 +753,20 @@ class PdfService {
   }
 }
 
+// Helper to build key-value line (label on left, value on right of colon)
+pw.Widget _kv(String key, String value) {
+  return pw.Padding(
+    padding: const pw.EdgeInsets.only(bottom: 8),
+    child: pw.Row(
+      crossAxisAlignment: pw.CrossAxisAlignment.start,
+      children: [
+        pw.Container(width: 80, child: pw.Text(key, style: pw.TextStyle(fontWeight: pw.FontWeight.bold))),
+        pw.Expanded(child: pw.Text(value.isEmpty ? ' ' : value)),
+      ],
+    ),
+  );
+}
+
 /// Function to run in a separate isolate
 Future<Uint8List> _generatePdfInBackground(Map<String, dynamic> params) async {
   final List<String> imagePaths = params['imagePaths'].cast<String>();
@@ -799,8 +842,8 @@ Future<Uint8List> _generatePdfInBackground(Map<String, dynamic> params) async {
   // Process images in batches of 3 for better performance
   final int batchSize = 3;
   final List<Map<String, dynamic>> processedImages = [];
-  final int targetWidth = 600; // Fixed width of 600px
-  final int jpegQuality = 70; // 70% JPEG quality
+  final int targetWidth = 1200; // Higher resolution for better quality
+  final int jpegQuality = 85; // Improved JPEG quality
 
   for (int i = 0; i < imagePaths.length; i += batchSize) {
     final int endIndex = (i + batchSize < imagePaths.length) ? i + batchSize : imagePaths.length;

@@ -54,4 +54,9 @@ abstract class FlutterDocScannerPlatform extends PlatformInterface {
   }) {
     throw UnimplementedError('getScanDocumentsUri() has not been implemented.');
   }
+
+  /// Open system picker pointing to ScanMate folder to pick a PDF
+  Future<dynamic> pickPdfFromScanMate() {
+    throw UnimplementedError('pickPdfFromScanMate() has not been implemented.');
+  }
 }

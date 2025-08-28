@@ -5,6 +5,7 @@ import 'package:provider/provider.dart';
 import 'providers/user_provider.dart';
 import 'screens/sign_in_screen.dart';
 import 'screens/home_screen.dart';
+import 'screens/splash_screen.dart';
 import 'package:flutter_doc_scanner/services/image_cache_service.dart';
 
 // Custom theme colors
@@ -61,8 +62,8 @@ class MyApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final isDarkMode = context.watch<UserProvider>().isDarkMode;
     final user = context.watch<UserProvider>();
+    final isDarkMode = user.isDarkMode;
 
     return MaterialApp(
       title: 'ScanMate',
@@ -97,15 +98,22 @@ class MyApp extends StatelessWidget {
       darkTheme: ThemeData.dark().copyWith(
         useMaterial3: true,
         colorScheme: ColorScheme.fromSeed(
-          seedColor: AppColors.primary,
-          primary: AppColors.primary,
-          secondary: AppColors.secondary,
-          background: Colors.grey[900]!,
+          seedColor: const Color(0xFF6D28D9),
+          primary: Colors.black,
+          secondary: const Color(0xFF6D28D9),
+          background: const Color(0xFF0B0B0F),
           brightness: Brightness.dark,
+        ),
+        scaffoldBackgroundColor: const Color(0xFF0B0B0F),
+        cardTheme: const CardThemeData(color: Color(0xFF121219)),
+        appBarTheme: const AppBarTheme(
+          backgroundColor: Colors.transparent,
+          foregroundColor: Colors.white,
+          elevation: 0,
         ),
       ),
       themeMode: isDarkMode ? ThemeMode.dark : ThemeMode.light,
-      home: user.name == null ? const SignInScreen() : const HomeScreen(),
+      home: const SplashScreen(),
       debugShowCheckedModeBanner: false,
     );
   }

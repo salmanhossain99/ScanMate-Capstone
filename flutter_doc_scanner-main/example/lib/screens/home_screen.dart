@@ -14,10 +14,17 @@ import 'package:share_plus/share_plus.dart';
 import 'package:file_saver/file_saver.dart';
 import 'package:device_info_plus/device_info_plus.dart';
 import 'package:flutter_doc_scanner/services/pdf_service.dart';
+import 'package:flutter_doc_scanner/services/enhanced_pdf_text_extraction_service.dart';
+import 'package:flutter_doc_scanner/services/offline_gemma_service.dart';
 import 'package:path/path.dart' as path;
+import 'package:pdfx/pdfx.dart' as pdfx;
+import 'tutorial_screen.dart';
+import 'settings_screen.dart';
+import 'account_screen.dart';
+import 'sign_in_screen.dart' as signin;
 
 import '../providers/user_provider.dart';
-import 'sign_in_screen.dart';
+// removed direct import; using alias above
 import 'document_cover_page_screen.dart';
 import '../main.dart';
 import 'package:flutter/foundation.dart';
@@ -135,6 +142,7 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> {
+  final GlobalKey<ScaffoldState> _scaffoldKey = GlobalKey<ScaffoldState>();
   dynamic _scannedDocuments;
   int _bottomNavIndex = 0;
   String? _lastSavedFilePath;
@@ -513,41 +521,89 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Future<void> scanDocument() async {
+    // Enforce APK photo cap per email
+    final user = Provider.of<UserProvider>(context, listen: false);
+    final current = await user.getScanCount();
+    final remaining = UserProvider.apkScanLimit - current;
+    if (remaining <= 0) {
+      if (!mounted) return;
+      showDialog(
+        context: context,
+        builder: (_) => AlertDialog(
+          title: const Text('Limit Reached'),
+          content: Text('For this APK, your account has reached the ${UserProvider.apkScanLimit} photo limit. Please wait for the final product.'),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(context), child: const Text('OK')),
+          ],
+        ),
+      );
+      return;
+    }
     if (!await _requestPermissions()) {
       return;
     }
 
     try {
-      final scannedDocs = await FlutterDocScanner().getScanDocuments(page: 4);
-      
-      if (scannedDocs != null && scannedDocs is List && scannedDocs.isNotEmpty) {
-        if (!mounted) return;
-        
-        // Show confirmation dialog
-        final shouldSave = await showDialog<bool>(
-          context: context,
-          barrierDismissible: false,
-          builder: (context) => AlertDialog(
-            title: Text('Save Document'),
-            content: Text('${scannedDocs.length} pages scanned. Do you want to save them as PDF?'),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(context, false),
-                child: Text('Cancel'),
-              ),
-              FilledButton(
-                onPressed: () => Navigator.pop(context, true),
-                child: Text('Save'),
-              ),
-            ],
-          ),
-        ) ?? false;
+      // Use ML Kit to return PDF directly for instant conversion
+      final result = await FlutterDocScanner().getScannedDocumentAsPdf(page: remaining);
+      if (result is Map && result['pdfUri'] is String) {
+        final pdfPath = result['pdfUri'] as String;
+        // Count pages and enforce remaining allowance BEFORE saving
+        final tempPdf = File(pdfPath);
+        int captured = 0;
+        try {
+          final doc = await pdfx.PdfDocument.openFile(tempPdf.path);
+          captured = doc.pagesCount;
+          await doc.close();
+        } catch (_) {
+          final bytesTmp = await tempPdf.readAsBytes();
+          final content = String.fromCharCodes(bytesTmp);
+          captured = RegExp(r'/Type\s*/Page\b').allMatches(content).length;
+          if (captured <= 0) captured = 1;
+        }
+        if (captured > remaining) {
+          if (!mounted) return;
+          await showDialog(
+            context: context,
+            builder: (_) => AlertDialog(
+              title: const Text('Limit Exceeded'),
+              content: Text('Only $remaining more photo(s) allowed in this APK. Please rescan with fewer pages.'),
+              actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text('OK'))],
+            ),
+          );
+          return;
+        }
+        // Save the returned PDF directly to ScanMate folder
+        final bytes = await tempPdf.readAsBytes();
+        final String timestamp = DateTime.now().millisecondsSinceEpoch.toString();
+        final String fileName = 'ScanMate_$timestamp.pdf';
 
-        if (shouldSave) {
-          await _savePDF(scannedDocs);
-          setState(() {
-            _scannedDocuments = scannedDocs;
-          });
+        Directory? externalDir;
+        if (Platform.isAndroid) {
+          externalDir = Directory('/storage/emulated/0/Download');
+          if (!await externalDir.exists()) {
+            externalDir = await getExternalStorageDirectory();
+          }
+        } else {
+          externalDir = await getApplicationDocumentsDirectory();
+        }
+
+        if (externalDir != null) {
+          final scanMateDir = Directory('${externalDir.path}/ScanMate');
+          if (!await scanMateDir.exists()) {
+            await scanMateDir.create(recursive: true);
+          }
+          final outFile = File('${scanMateDir.path}/$fileName');
+          await outFile.writeAsBytes(bytes);
+          _lastSavedFilePath = outFile.path;
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text('PDF saved to ${scanMateDir.path}')),
+            );
+          }
+          await _loadDownloadedFiles();
+          // Increment by number of pages captured (bounded by remaining)
+          await user.incrementScanCountBy(captured);
         }
       }
     } on PlatformException catch (e) {
@@ -562,17 +618,38 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Future<void> scanWithCoverPage() async {
+    // Enforce APK photo cap per email
+    final user = Provider.of<UserProvider>(context, listen: false);
+    final current = await user.getScanCount();
+    int remaining = UserProvider.apkScanLimit - current;
+    if (remaining <= 0) {
+      if (!mounted) return;
+      showDialog(
+        context: context,
+        builder: (_) => AlertDialog(
+          title: const Text('Limit Reached'),
+          content: Text('For this APK, your account has reached the ${UserProvider.apkScanLimit} photo limit. Please wait for the final product.'),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(context), child: const Text('OK')),
+          ],
+        ),
+      );
+      return;
+    }
     if (!await _requestPermissions()) return;
 
     try {
-      // This is the FIX: Directly call getScanDocuments.
+      // Directly call getScanDocuments with remaining allowance
       final documentsList =
-          await FlutterDocScanner().getScanDocuments(page: 100);
+          await FlutterDocScanner().getScanDocuments(page: remaining);
 
       if (documentsList != null &&
           documentsList is List &&
           documentsList.isNotEmpty) {
         print('Documents scanned successfully: ${documentsList.length} pages');
+        // Increment photo count now
+        final toAdd = documentsList.length;
+        await user.incrementScanCountBy(toAdd > remaining ? remaining : toAdd);
         if (!mounted) return;
         
         // Show cover page screen
@@ -732,9 +809,73 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
+  Future<void> _openAISummarizeFromFile() async {
+    try {
+      if (!await _requestPermissions()) return;
+      // Let user pick a PDF from ScanMate or any location
+      dynamic picked = await FlutterDocScanner().pickPdfFromScanMate();
+      String? pdfPath;
+      if (picked is String && picked.toLowerCase().endsWith('.pdf')) {
+        pdfPath = picked;
+      } else if (picked is Map && picked['pdfUri'] is String) {
+        pdfPath = picked['pdfUri'] as String;
+      }
+      if (pdfPath == null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('No PDF selected')),
+        );
+        return;
+      }
+      // Extract text with OCR
+      final extractor = EnhancedPdfTextExtractionService();
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Extracting text...')),
+      );
+      final text = await extractor.extractTextFromPdf(pdfPath, skipCoverPage: true);
+      // Summarize offline
+      final summarizer = OfflineGemmaService();
+      final summary = await summarizer.summarizePdf(text);
+      if (!mounted) return;
+      await showDialog(
+        context: context,
+        builder: (_) => AlertDialog(
+          title: const Text('AI Summary'),
+          content: SingleChildScrollView(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(summary.summary),
+                const SizedBox(height: 12),
+                const Text('Key Points', style: TextStyle(fontWeight: FontWeight.bold)),
+                const SizedBox(height: 6),
+                ...summary.keyPoints.map((e) => Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text('• '),
+                        Expanded(child: Text(e)),
+                      ],
+                    )),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(context), child: const Text('Close')),
+          ],
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('AI summarize failed: $e'), backgroundColor: Colors.red),
+      );
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      key: _scaffoldKey,
+      drawer: _buildAppDrawer(context),
       body: Stack(
         children: [
           // Background
@@ -761,32 +902,100 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  Widget _buildBackground() {
-    return Column(
-      children: [
-        Expanded(
-          flex: 4,
-          child: Container(
-            decoration: const BoxDecoration(
-              gradient: LinearGradient(
-                begin: Alignment.topCenter,
-                end: Alignment.bottomCenter,
-                stops: [0.0, 0.27, 1.0],
-                colors: [
-                  AppColors.gradientStart,
-                  AppColors.gradientMiddle,
-                  AppColors.gradientEnd,
+  Widget _buildAppDrawer(BuildContext context) {
+    return Drawer(
+      child: SafeArea(
+        child: ListView(
+          padding: EdgeInsets.zero,
+          children: [
+            DrawerHeader(
+              margin: EdgeInsets.zero,
+              padding: const EdgeInsets.all(16),
+              child: Row(
+                children: [
+                  const CircleAvatar(radius: 24, child: Icon(Icons.person)),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: const [
+                        Text('ScanMate', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+                        SizedBox(height: 4),
+                        Text('Your smart document assistant', style: TextStyle(fontSize: 12, color: Colors.grey)),
+                      ],
+                    ),
+                  ),
                 ],
               ),
             ),
-          ),
+            ListTile(
+              leading: const Icon(Icons.account_circle_outlined),
+              title: const Text('Account'),
+              onTap: () {
+                Navigator.pop(context);
+                Navigator.of(context).push(
+                  MaterialPageRoute(builder: (_) => const AccountScreen()),
+                );
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.settings_outlined),
+              title: const Text('Settings'),
+              onTap: () {
+                Navigator.pop(context);
+                _openSettings();
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.menu_book_outlined),
+              title: const Text('Tutorial'),
+              onTap: () {
+                Navigator.pop(context);
+                Navigator.of(context).push(
+                  MaterialPageRoute(builder: (_) => const TutorialScreen()),
+                );
+              },
+            ),
+          ],
         ),
-        Expanded(
-          flex: 6,
-          child: Container(color: Colors.white),
-        ),
-      ],
+      ),
     );
+  }
+
+ 
+
+  Widget _buildBackground() {
+    final bool isDark = Theme.of(context).brightness == Brightness.dark;
+    if (!isDark) {
+      return Column(
+        children: [
+          Expanded(
+            flex: 4,
+            child: Container(
+              decoration: const BoxDecoration(
+                gradient: LinearGradient(
+                  begin: Alignment.topCenter,
+                  end: Alignment.bottomCenter,
+                  stops: [0.0, 0.27, 1.0],
+                  colors: [
+                    AppColors.gradientStart,
+                    AppColors.gradientMiddle,
+                    AppColors.gradientEnd,
+                  ],
+                ),
+              ),
+            ),
+          ),
+          Expanded(
+            flex: 6,
+            child: Container(color: Theme.of(context).scaffoldBackgroundColor),
+          ),
+        ],
+      );
+    }
+    // Dark mode background plain
+    return Container(color: const Color(0xFF0B0B0F));
   }
 
   Widget _buildBody() {
@@ -797,12 +1006,15 @@ class _HomeScreenState extends State<HomeScreen> {
         SingleChildScrollView(
           child: Column(
             children: [
-              const SizedBox(height: 180), // Space for action buttons
+              const SizedBox(height: 160),
 
               // Search bar
               Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 20),
-                child: _buildSearchBar(),
+                child: Align(
+                  alignment: Alignment.center,
+                  child: _buildSearchBar(),
+                ),
               ),
 
               const SizedBox(height: 20),
@@ -817,8 +1029,8 @@ class _HomeScreenState extends State<HomeScreen> {
         // Positioned action buttons
         Positioned(
           top: 20,
-          left: 20,
-          right: 20,
+          left: 12,
+          right: 12,
           child: _buildMainActionButtons(),
         ),
       ],
@@ -827,20 +1039,23 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Widget _buildHeader() {
     return Padding(
-      padding: const EdgeInsets.all(20),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 20),
       child: Column(
         mainAxisAlignment: MainAxisAlignment.start,
         children: [
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              IconButton(
-                icon: const Icon(Icons.menu, color: Colors.white, size: 28),
-                onPressed: () {
-                  // TODO: Implement drawer
-                },
+              Align(
+                alignment: Alignment.centerLeft,
+                child: IconButton(
+                  padding: EdgeInsets.zero,
+                  icon: const Icon(Icons.menu, color: Colors.white, size: 28),
+                  onPressed: () => _scaffoldKey.currentState?.openDrawer(),
+                ),
               ),
               IconButton(
+                padding: EdgeInsets.zero,
                 icon: const Icon(Icons.logout, color: Colors.white, size: 24),
                 onPressed: () async {
                   // Implement logout functionality
@@ -850,7 +1065,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   
                   // Navigate to sign in screen
                   Navigator.of(context).pushReplacement(
-                    MaterialPageRoute(builder: (context) => const SignInScreen()),
+                    MaterialPageRoute(builder: (context) => const signin.SignInScreen()),
                   );
                 },
               ),
@@ -869,22 +1084,35 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Widget _buildMainActionButtons() {
+    final bool isDark = Theme.of(context).brightness == Brightness.dark;
     return Container(
-      height: 120,
-      padding: const EdgeInsets.symmetric(vertical: 20, horizontal: 15),
+      height: 130,
+      padding: const EdgeInsets.symmetric(vertical: 22, horizontal: 18),
       decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(7),
+        color: isDark ? Colors.white.withOpacity(0.06) : Colors.white,
+        borderRadius: BorderRadius.circular(16),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.1),
-            blurRadius: 10,
-            offset: const Offset(0, 5),
+            color: isDark ? const Color(0xFF6D28D9).withOpacity(0.35) : Colors.black.withOpacity(0.1),
+            blurRadius: isDark ? 36 : 10,
+            spreadRadius: isDark ? 1 : 0,
+            offset: const Offset(0, 8),
           ),
         ],
+        border: isDark ? Border.all(color: const Color(0xFF6D28D9).withOpacity(0.6), width: 1.2) : null,
+        gradient: isDark
+            ? LinearGradient(
+                colors: [
+                  Colors.white.withOpacity(0.10),
+                  Colors.white.withOpacity(0.04),
+                ],
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+              )
+            : null,
       ),
       child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+        mainAxisAlignment: MainAxisAlignment.spaceAround,
         crossAxisAlignment: CrossAxisAlignment.center,
         children: [
           // Scan button
@@ -906,22 +1134,28 @@ class _HomeScreenState extends State<HomeScreen> {
           // AI button
           _buildActionButton(
             label: 'AI',
-            color: const Color(0xFF2196F3), // Blue
+            color: isDark ? const Color(0xFF6D28D9) : const Color(0xFF2196F3),
             icon: Icons.smart_toy_outlined,
-            onTap: _openAISetup,
+            onTap: _openAISummarizeFromFile,
           ),
           
           // Settings button
           _buildActionButton(
             label: 'Settings',
-            color: const Color(0xFFFF9800), // Orange/Amber
+            color: isDark ? Colors.white.withOpacity(0.18) : const Color(0xFFFF9800),
             icon: Icons.settings,
             onTap: () {
-              // TODO: Implement settings
+              _openSettings();
             },
           ),
         ],
       ),
+    );
+  }
+
+  void _openSettings() {
+    Navigator.of(context).push(
+      MaterialPageRoute(builder: (context) => const SettingsScreen()),
     );
   }
 
@@ -949,27 +1183,39 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
           ),
           const SizedBox(height: 8),
-          Text(
-            label,
-            textAlign: TextAlign.center,
-            style: const TextStyle(
-              fontSize: 12,
-              fontWeight: FontWeight.w500,
-              color: Colors.black87,
-              height: 1.2,
-            ),
-          ),
+          Builder(builder: (context) {
+            final isDark = Theme.of(context).brightness == Brightness.dark;
+            return Text(
+              label,
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w500,
+                color: isDark ? Colors.white : Colors.black87,
+                height: 1.2,
+              ),
+            );
+          }),
         ],
       ),
     );
   }
 
   Widget _buildSearchBar() {
+    final bool isDark = Theme.of(context).brightness == Brightness.dark;
     return Container(
       decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Colors.grey.withOpacity(0.2)),
-        color: Colors.grey[50],
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: isDark ? Colors.white.withOpacity(0.08) : Colors.grey.withOpacity(0.2)),
+        color: isDark ? Colors.white.withOpacity(0.06) : Colors.grey[50],
+        boxShadow: [
+          if (isDark)
+            BoxShadow(
+              color: const Color(0xFF6D28D9).withOpacity(0.25),
+              blurRadius: 16,
+              offset: const Offset(0, 4),
+            ),
+        ],
       ),
       child: TextField(
         controller: _searchController,
@@ -980,19 +1226,12 @@ class _HomeScreenState extends State<HomeScreen> {
           });
         },
         decoration: InputDecoration(
-          hintText: 'Search',
-          hintStyle: TextStyle(color: Colors.grey[600], fontSize: 14),
-          prefixIcon: null,
+          hintText: 'Search your documents',
+          hintStyle: TextStyle(color: isDark ? Colors.white70 : Colors.grey[600], fontSize: 14),
+          prefixIcon: Icon(Icons.search, size: 20, color: isDark ? Colors.white70 : Colors.grey),
           border: InputBorder.none,
-          contentPadding: const EdgeInsets.symmetric(vertical: 15, horizontal: 15),
-          suffixIcon: Container(
-            margin: const EdgeInsets.all(6),
-            decoration: BoxDecoration(
-              color: const Color(0xFF504AF2), // Match the gradient end color
-              borderRadius: BorderRadius.circular(8),
-            ),
-            child: const Icon(Icons.search, color: Colors.white, size: 20),
-          ),
+          contentPadding: const EdgeInsets.symmetric(vertical: 10, horizontal: 14),
+          suffixIcon: const SizedBox.shrink(),
         ),
       ),
     );
@@ -1007,14 +1246,17 @@ class _HomeScreenState extends State<HomeScreen> {
           child: Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              const Text(
-                'Recent Files',
-                style: TextStyle(
-                  fontSize: 18,
-                  fontWeight: FontWeight.bold,
-                  color: Colors.black87,
-                ),
-              ),
+              Builder(builder: (context) {
+                final bool isDark = Theme.of(context).brightness == Brightness.dark;
+                return Text(
+                  'Recent Files',
+                  style: TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.bold,
+                    color: isDark ? const Color(0xFF6D28D9) : Colors.black87,
+                  ),
+                );
+              }),
               Icon(Icons.arrow_forward, color: Colors.grey[600]),
             ],
           ),
@@ -1048,74 +1290,76 @@ class _HomeScreenState extends State<HomeScreen> {
     final fileName = path.basename(file.path);
     final lastModified = file.lastModifiedSync();
     
+    final bool isDark = Theme.of(context).brightness == Brightness.dark;
     return Container(
-      margin: const EdgeInsets.only(bottom: 15),
-      padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 15),
+      margin: const EdgeInsets.only(bottom: 16),
+      padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: Colors.grey.withOpacity(0.1)),
+        color: isDark ? Colors.white.withOpacity(0.06) : Colors.white,
+        borderRadius: BorderRadius.circular(14),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.03),
-            blurRadius: 8,
-            offset: const Offset(0, 2),
+            color: isDark ? const Color(0xFF6D28D9).withOpacity(0.25) : Colors.black.withOpacity(0.06),
+            blurRadius: 20,
+            offset: const Offset(0, 8),
           ),
         ],
+        border: isDark ? Border.all(color: Colors.white.withOpacity(0.08)) : null,
+        gradient: isDark
+            ? LinearGradient(
+                colors: [
+                  Colors.white.withOpacity(0.10),
+                  Colors.white.withOpacity(0.04),
+                ],
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+              )
+            : null,
       ),
       child: Row(
         children: [
-          // Document thumbnail
+          // Thumbnail
           Container(
-            width: 50,
-            height: 70,
+            width: 52,
+            height: 68,
             decoration: BoxDecoration(
-              color: Colors.grey[100],
-              borderRadius: BorderRadius.circular(5),
+              color: isDark ? Colors.white.withOpacity(0.08) : Colors.grey[200],
+              borderRadius: BorderRadius.circular(8),
             ),
-            child: const Icon(Icons.insert_drive_file, color: Colors.grey),
+            child: const Icon(Icons.picture_as_pdf, color: Colors.redAccent),
           ),
-          const SizedBox(width: 15),
-          // File details
+          const SizedBox(width: 12),
+          // Title and date in two lines max like reference
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
                   fileName.replaceAll('.pdf', '').replaceAll('_', ' '),
-                  style: const TextStyle(
-                    fontWeight: FontWeight.bold,
-                    fontSize: 16,
-                  ),
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600, color: isDark ? Colors.white : Colors.black),
                 ),
-                const SizedBox(height: 5),
+                const SizedBox(height: 6),
                 Text(
-                  '${lastModified.day}/${lastModified.month}/${lastModified.year}  ${lastModified.hour.toString().padLeft(2, '0')}:${lastModified.minute.toString().padLeft(2, '0')}',
-                  style: TextStyle(
-                    color: Colors.grey[600],
-                    fontSize: 12,
-                  ),
+                  '${lastModified.day.toString().padLeft(2, '0')}/${lastModified.month.toString().padLeft(2, '0')}/${lastModified.year}  ${lastModified.hour.toString().padLeft(2, '0')}:${lastModified.minute.toString().padLeft(2, '0')}',
+                  style: TextStyle(color: isDark ? Colors.white70 : Colors.grey[600], fontSize: 12),
                 ),
               ],
             ),
           ),
-          // Action buttons
-          Row(
-            children: [
-              IconButton(
-                icon: const Icon(Icons.share, size: 20),
-                onPressed: () => _shareFile(file),
-              ),
-              IconButton(
-                icon: const Icon(Icons.more_vert, size: 20),
-                onPressed: () {
-                  showModalBottomSheet(
-                    context: context,
-                    builder: (context) => _buildFileActionsSheet(file),
-                  );
-                },
-              ),
-            ],
+          IconButton(
+            icon: const Icon(Icons.share, size: 20),
+            onPressed: () => _shareFile(file),
+          ),
+          IconButton(
+            icon: const Icon(Icons.more_vert, size: 20),
+            onPressed: () {
+              showModalBottomSheet(
+                context: context,
+                builder: (context) => _buildFileActionsSheet(file),
+              );
+            },
           ),
         ],
       ),
@@ -1242,10 +1486,23 @@ class _HomeScreenState extends State<HomeScreen> {
               Expanded(
                 child: Container(
                   height: 50,
-                  padding: const EdgeInsets.all(4),
+                  padding: const EdgeInsets.all(6),
                   decoration: BoxDecoration(
-                    color: const Color(0xFF0D062C), // Dark blue from gradient
-                    borderRadius: BorderRadius.circular(25),
+                    color: Theme.of(context).brightness == Brightness.dark
+                        ? Colors.white.withOpacity(0.06)
+                        : const Color(0xFF0D062C),
+                    borderRadius: BorderRadius.circular(16),
+                    border: Theme.of(context).brightness == Brightness.dark
+                        ? Border.all(color: Colors.white.withOpacity(0.08))
+                        : null,
+                    boxShadow: [
+                      if (Theme.of(context).brightness == Brightness.dark)
+                        BoxShadow(
+                          color: const Color(0xFF6D28D9).withOpacity(0.25),
+                          blurRadius: 20,
+                          offset: const Offset(0, 8),
+                        ),
+                    ],
                   ),
                   child: Row(
                     mainAxisAlignment: MainAxisAlignment.spaceEvenly,
@@ -1266,11 +1523,11 @@ class _HomeScreenState extends State<HomeScreen> {
           height: 60,
           width: 60,
           decoration: BoxDecoration(
-            color: const Color(0xFF504AF2),
+            color: Theme.of(context).brightness == Brightness.dark ? const Color(0xFF6D28D9) : const Color(0xFF504AF2),
             shape: BoxShape.circle,
             boxShadow: [
               BoxShadow(
-                color: const Color(0xFF504AF2).withOpacity(0.3),
+                color: (Theme.of(context).brightness == Brightness.dark ? const Color(0xFF6D28D9) : const Color(0xFF504AF2)).withOpacity(0.35),
                 blurRadius: 10,
                 spreadRadius: 2,
                 offset: const Offset(0, 2),
@@ -1294,10 +1551,12 @@ class _HomeScreenState extends State<HomeScreen> {
         });
       },
       child: Container(
-        width: 40,
-        height: 40,
+        width: 42,
+        height: 42,
         decoration: BoxDecoration(
-          color: isSelected ? const Color(0xFF504AF2) : Colors.transparent,
+          color: isSelected
+              ? (Theme.of(context).brightness == Brightness.dark ? const Color(0xFF6D28D9) : const Color(0xFF504AF2))
+              : Colors.transparent,
           shape: BoxShape.circle,
         ),
         child: Icon(
@@ -1573,4 +1832,25 @@ class _HomeScreenState extends State<HomeScreen> {
       ),
     );
   }
+
+}
+
+class _GridPainter extends CustomPainter {
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()
+      ..color = Colors.white.withOpacity(0.03)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1;
+    const double gap = 28;
+    for (double x = 0; x < size.width; x += gap) {
+      canvas.drawLine(Offset(x, 0), Offset(x, size.height), paint);
+    }
+    for (double y = 0; y < size.height; y += gap) {
+      canvas.drawLine(Offset(0, y), Offset(size.width, y), paint);
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
 } 

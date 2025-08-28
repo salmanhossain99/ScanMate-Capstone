@@ -24,6 +24,9 @@ class _DocumentCoverPageScreenState extends State<DocumentCoverPageScreen> {
   final _emailController = TextEditingController();
   final _studentIdController = TextEditingController();
   final _courseNameController = TextEditingController();
+  final _assignmentNumberController = TextEditingController(text: '1');
+  final _sectionController = TextEditingController();
+  final _submittedToController = TextEditingController();
 
   @override
   void initState() {
@@ -31,8 +34,10 @@ class _DocumentCoverPageScreenState extends State<DocumentCoverPageScreen> {
     final userProvider = Provider.of<UserProvider>(context, listen: false);
     _nameController.text = userProvider.name ?? '';
     _emailController.text = userProvider.email ?? '';
-    _studentIdController.text = '20317';
-    _courseNameController.text = 'CSE'; // Auto-populate with CSE
+    _studentIdController.text = userProvider.studentId ?? '2031780642';
+    _courseNameController.text = 'cse499';
+    _sectionController.text = '2';
+    _submittedToController.text = 'sfr1';
     print('Cover page initialized with ${widget.scannedDocuments.length} documents');
     print('Document types: ${widget.scannedDocuments.map((d) => d.runtimeType).toList()}');
   }
@@ -43,7 +48,78 @@ class _DocumentCoverPageScreenState extends State<DocumentCoverPageScreen> {
     _emailController.dispose();
     _studentIdController.dispose();
     _courseNameController.dispose();
+    _assignmentNumberController.dispose();
+    _sectionController.dispose();
+    _submittedToController.dispose();
     super.dispose();
+  }
+
+  Future<bool> _showDiscardDialog() async {
+    final theme = Theme.of(context);
+    final result = await showDialog<bool>(
+      context: context,
+      barrierDismissible: true,
+      builder: (context) {
+        return Dialog(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          child: Padding(
+            padding: const EdgeInsets.all(20),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  height: 56,
+                  width: 56,
+                  decoration: BoxDecoration(
+                    color: Colors.red.withOpacity(0.1),
+                    shape: BoxShape.circle,
+                  ),
+                  child: const Icon(Icons.delete_forever_rounded, color: Colors.red, size: 28),
+                ),
+                const SizedBox(height: 16),
+                Text(
+                  'Discard Scan?',
+                  style: GoogleFonts.poppins(fontSize: 18, fontWeight: FontWeight.w600),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  'Are you sure you want to discard this scan? You will lose the current pages.',
+                  textAlign: TextAlign.center,
+                  style: theme.textTheme.bodyMedium?.copyWith(color: Colors.grey[700]),
+                ),
+                const SizedBox(height: 20),
+                Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton(
+                        onPressed: () => Navigator.pop(context, false),
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: theme.colorScheme.primary,
+                          side: BorderSide(color: theme.colorScheme.primary.withOpacity(0.3)),
+                        ),
+                        child: const Text('Cancel'),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: FilledButton(
+                        onPressed: () => Navigator.pop(context, true),
+                        style: FilledButton.styleFrom(
+                          backgroundColor: Colors.red,
+                          foregroundColor: Colors.white,
+                        ),
+                        child: const Text('Discard'),
+                      ),
+                    ),
+                  ],
+                )
+              ],
+            ),
+          ),
+        );
+      },
+    );
+    return result ?? false;
   }
 
   Widget _buildDocumentPreview() {
@@ -113,26 +189,7 @@ class _DocumentCoverPageScreenState extends State<DocumentCoverPageScreen> {
       onPopInvoked: (didPop) async {
         if (didPop) return;
         
-        final shouldDiscard = await showDialog<bool>(
-          context: context,
-          builder: (context) => AlertDialog(
-            title: const Text('Discard Scan?'),
-            content: const Text('Are you sure you want to discard this scan?'),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(context, false),
-                child: const Text('Cancel'),
-              ),
-              FilledButton(
-                onPressed: () => Navigator.pop(context, true),
-                style: FilledButton.styleFrom(
-                  backgroundColor: Colors.red,
-                ),
-                child: const Text('Discard'),
-              ),
-            ],
-          ),
-        ) ?? false;
+        final shouldDiscard = await _showDiscardDialog();
         
         if (shouldDiscard && context.mounted) {
           Navigator.pop(context);
@@ -160,32 +217,12 @@ class _DocumentCoverPageScreenState extends State<DocumentCoverPageScreen> {
                     children: [
                       IconButton(
                         icon: const Icon(Icons.close, color: Colors.white),
-            onPressed: () async {
-              final shouldDiscard = await showDialog<bool>(
-                context: context,
-                builder: (context) => AlertDialog(
-                  title: const Text('Discard Scan?'),
-                  content: const Text('Are you sure you want to discard this scan?'),
-                  actions: [
-                    TextButton(
-                      onPressed: () => Navigator.pop(context, false),
-                      child: const Text('Cancel'),
-                    ),
-                    FilledButton(
-                      onPressed: () => Navigator.pop(context, true),
-                      style: FilledButton.styleFrom(
-                        backgroundColor: Colors.red,
-                      ),
-                      child: const Text('Discard'),
-                    ),
-                  ],
-                ),
-              ) ?? false;
-              
+                        onPressed: () async {
+                          final shouldDiscard = await _showDiscardDialog();
                           if (shouldDiscard && context.mounted) {
-                  Navigator.pop(context);
-              }
-            },
+                            Navigator.pop(context);
+                          }
+                        },
           ),
                       const Expanded(
                         child: Text(
@@ -285,12 +322,60 @@ class _DocumentCoverPageScreenState extends State<DocumentCoverPageScreen> {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
-                        'Student Information',
+                        'Cover Page Details',
                         style: GoogleFonts.poppins(
                           fontSize: 18,
                           fontWeight: FontWeight.w600,
               color: const Color(0xFF1E3A8A),
                         ),
+                      ),
+                      const SizedBox(height: 16),
+                      Row(
+                        children: [
+                          Expanded(
+                          child: TextFormField(
+                              controller: _assignmentNumberController,
+                              keyboardType: TextInputType.number,
+                              decoration: const InputDecoration(
+                                labelText: 'Assignment Number',
+                                prefixIcon: Icon(Icons.numbers),
+                                border: OutlineInputBorder(),
+                              ),
+                              validator: (value) {
+                                if (value == null || value.isEmpty) return 'Enter assignment number';
+                                final n = int.tryParse(value);
+                                if (n == null || n <= 0) return 'Enter a valid number';
+                                return null;
+                              },
+                            ),
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: TextFormField(
+                              controller: _sectionController,
+                              decoration: const InputDecoration(
+                                labelText: 'Section',
+                                prefixIcon: Icon(Icons.view_agenda_outlined),
+                                border: OutlineInputBorder(),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 16),
+                       TextFormField(
+                        controller: _submittedToController,
+                        decoration: const InputDecoration(
+                          labelText: 'Submitted To (Faculty Name)',
+                          prefixIcon: Icon(Icons.person_outline),
+                          border: OutlineInputBorder(),
+                        ),
+                        validator: (value) {
+                          if (value == null || value.isEmpty) {
+                            return 'Please enter faculty name';
+                          }
+                          return null;
+                        },
                       ),
                       const SizedBox(height: 16),
                       TextFormField(
@@ -341,13 +426,12 @@ class _DocumentCoverPageScreenState extends State<DocumentCoverPageScreen> {
                         },
                       ),
                       const SizedBox(height: 16),
-                      TextFormField(
+                       TextFormField(
                         controller: _courseNameController,
                         decoration: const InputDecoration(
                           labelText: 'Course Name',
                           prefixIcon: Icon(Icons.school),
               border: OutlineInputBorder(),
-              helperText: 'Auto-populated with CSE, you can change it',
                         ),
                         validator: (value) {
                           if (value == null || value.isEmpty) {
@@ -369,6 +453,9 @@ class _DocumentCoverPageScreenState extends State<DocumentCoverPageScreen> {
                       'email': _emailController.text,
                       'studentId': _studentIdController.text,
                       'courseName': _courseNameController.text,
+                      'assignmentNumber': _assignmentNumberController.text,
+                      'section': _sectionController.text,
+                      'submittedTo': _submittedToController.text,
                     };
                     
                     // Save the entered info

@@ -65,4 +65,9 @@ class FlutterDocScanner {
           "Currently, this feature is supported only on Android Platform");
     }
   }
+
+  /// Open system file picker at ScanMate folder for PDF selection
+  Future<dynamic> pickPdfFromScanMate() {
+    return FlutterDocScannerPlatform.instance.pickPdfFromScanMate();
+  }
 }

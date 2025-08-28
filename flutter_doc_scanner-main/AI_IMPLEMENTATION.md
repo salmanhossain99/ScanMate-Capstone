@@ -85,55 +85,17 @@ PDF File → Text Extraction → Text Chunking → Gemma 3n Processing → Summa
 
 ## 🔧 Setup Instructions
 
-### 🔐 Secure Setup (Recommended)
-**For production use, store your token securely in environment variables:**
-
-1. **Copy the template file**:
-   ```bash
-   cp env_template.txt .env
-   ```
-
-2. **Edit .env file** with your token:
-   ```env
-   HUGGING_FACE_TOKEN=your_actual_token_here
-   ```
-
-3. **The app will automatically use your environment token** - no manual entry needed!
-
-### Quick Setup (Manual Entry)
-**For quick testing, you can also manually enter your Hugging Face token in the app.**
+### Prerequisites
+1. **Hugging Face Account**: Create free account at huggingface.co
+2. **Access Token**: Generate token with "Read" permissions
+3. **Device Storage**: Ensure 3GB+ free space for model
 
 ### Installation Steps
 1. **Run the app** from `/example` folder
 2. **Open any PDF** in the app
-3. **Tap the robot icon** (🤖) in PDF preview - labeled "AI Assistant"
-4. **Paste the token above** when prompted
-5. **Wait for one-time model download** (2.99 GB - takes 5-15 minutes)
-6. **Start summarizing** PDFs offline immediately!
-
-### Step-by-Step AI Setup Process
-1. **Launch ScanMate** and scan or open any PDF document
-2. **Look for the AI Assistant icon** (🤖) in the top toolbar next to share/save buttons
-3. **Tap "AI Assistant"** - this will open the AI setup screen on first use
-4. **Copy and paste your Hugging Face token**
-5. **Tap "Download Model"** and wait for the download to complete
-6. **Once downloaded**, the AI feature is ready - no internet needed for future use!
-
-### Alternative: Create Your Own Token (Optional)
-1. **Hugging Face Account**: Create free account at huggingface.co
-2. **Generate Token**: Go to Settings → Access Tokens → Create new token with "Read" permissions
-3. **Use your token** instead of the provided one above
-
-### Prerequisites
-- **Device Storage**: Ensure 3GB+ free space for model download
-- **Internet Connection**: Only needed once for initial model download
-- **Compatible Device**: Android 7.0+ or iOS 13.0+ recommended
-
-### 🔐 Security Note
-- **Environment Variables**: Tokens are now stored securely in `.env` files
-- **Git Protection**: `.env` files are automatically ignored by Git
-- **No Hardcoded Secrets**: Safe to push to public repositories
-- **See ENV_SETUP_GUIDE.md** for detailed security setup instructions
+3. **Tap the robot icon** (🤖) in PDF preview
+4. **Follow setup wizard** to download model
+5. **Start summarizing** PDFs offline!
 
 ## 🎯 Competition Advantages
 
@@ -232,24 +194,10 @@ This implementation is **competition-ready** and demonstrates:
 
 ## 🔧 Quick Test
 
-### Testing the AI Feature
-1. **Build and run the app** from the `/example` folder
-2. **Scan or open any PDF** in the app
-3. **Look for the AI Assistant icon** (🤖) in the PDF preview toolbar
-4. **Tap the AI Assistant button** to start the setup process
-5. **Use your Hugging Face token**
-6. **Wait for model download** (one-time process, 5-15 minutes)
-7. **Experience real AI summarization** - completely offline!
+1. Build and run the app
+2. Generate any PDF in the app
+3. Look for the robot icon (🤖) in PDF preview
+4. Tap it to see the AI workflow in action
+5. Experience the mock summarization demo
 
-### What to Expect
-- **First Use**: Model download screen with progress indicator
-- **Subsequent Uses**: Instant AI processing (15-60 seconds per PDF)
-- **Results**: Professional summary with key points, stats, and original text
-- **Offline Operation**: No internet required after initial setup
-
-### Troubleshooting
-- **Download Issues**: Ensure stable internet and 3GB+ free space
-- **Processing Slow**: Normal on older devices, be patient
-- **Memory Errors**: Restart app and try with smaller PDFs first
-
-The AI feature is fully implemented and ready for production use! 
+The foundation is ready - just replace the mock services with the real Gemma 3n implementation! 

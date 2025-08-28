@@ -21,6 +21,8 @@ import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
 import 'dart:ui' as ui;
 import 'package:path/path.dart' as path;
+import 'package:permission_handler/permission_handler.dart';
+import 'package:pdfx/pdfx.dart' as pdfx;
 
 // AI Summarization imports
 import '../services/offline_gemma_service.dart';
@@ -83,6 +85,16 @@ class _OptimizedPdfPreviewState extends State<OptimizedPdfPreview> {
   bool _isAiProcessing = false;
   bool _isModelReady = false;
   EnhancedPdfTextExtractionService? _textExtractionService;
+  
+  Future<void> _incrementUserScanCount() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final email = prefs.getString('user_email') ?? 'guest';
+      final key = 'scan_count_${email.toLowerCase()}';
+      final current = prefs.getInt(key) ?? 0;
+      await prefs.setInt(key, current + 1);
+    } catch (_) {}
+  }
 
   @override
   void initState() {
@@ -347,11 +359,9 @@ class _OptimizedPdfPreviewState extends State<OptimizedPdfPreview> {
     }
   }
 
-  /// Extracts PDF pages as individual image files
+  /// Extracts PDF pages as individual image files using pdfx for real rendering
   Future<List<File>> _extractPdfPagesAsImages(File pdfFile, Directory tempDir) async {
     final List<File> extractedImages = [];
-    
-    try {
       print('Starting PDF page extraction for: ${pdfFile.path}');
       
       // Create a unique temporary directory for this PDF
@@ -360,50 +370,65 @@ class _OptimizedPdfPreviewState extends State<OptimizedPdfPreview> {
       final Directory pdfTempDir = Directory('${tempDir.path}/pdf_${timestamp}');
       await pdfTempDir.create(recursive: true);
       
-      // Read the PDF bytes to estimate page count
-      final Uint8List pdfBytes = await pdfFile.readAsBytes();
-      final int estimatedPageCount = _estimatePdfPageCount(pdfBytes);
-      
-      print('Estimated page count: $estimatedPageCount');
-      
-      // Extract each page as an image
-      for (int pageIndex = 0; pageIndex < estimatedPageCount; pageIndex++) {
+    try {
+      // Use pdfx to open and render real pages
+      final pdfx.PdfDocument document = await pdfx.PdfDocument.openFile(pdfFile.path);
+      final int pagesCount = document.pagesCount;
+      print('PDF has $pagesCount page(s)');
+
+      for (int i = 1; i <= pagesCount; i++) {
         try {
-          print('Extracting page ${pageIndex + 1}/$estimatedPageCount...');
-          
-          // Create a rendered image of this PDF page
-          final Uint8List? pageImageBytes = await _renderPdfPageAsImage(pdfFile, pageIndex);
-          
-          if (pageImageBytes != null && pageImageBytes.isNotEmpty) {
-            // Save the rendered page as an image file
-            final String imageFileName = '${pdfBaseName}_page_${pageIndex + 1}_$timestamp.png';
+          print('Extracting page $i/$pagesCount...');
+          final pdfx.PdfPage page = await document.getPage(i);
+          final pageImage = await page.render(
+            width: page.width, // keep natural size
+            height: page.height,
+            format: pdfx.PdfPageImageFormat.png,
+          );
+          await page.close();
+
+          if (pageImage != null && pageImage.bytes.isNotEmpty) {
+            final String imageFileName = '${pdfBaseName}_page_${i}_$timestamp.png';
             final String imagePath = path.join(pdfTempDir.path, imageFileName);
             final File imageFile = File(imagePath);
-            
-            await imageFile.writeAsBytes(pageImageBytes);
-            
+            await imageFile.writeAsBytes(pageImage.bytes);
             if (await imageFile.exists()) {
               extractedImages.add(imageFile);
-              print('Successfully extracted page ${pageIndex + 1} as: $imagePath');
-            } else {
-              print('Failed to save page ${pageIndex + 1} image file');
+              print('Successfully extracted page $i as: $imagePath');
             }
           } else {
-            print('Failed to render page ${pageIndex + 1} - no image data');
-            break; // Stop trying if we can't render this page
+            print('Render returned empty bytes for page $i');
           }
         } catch (e) {
-          print('Error extracting page ${pageIndex + 1}: $e');
-          break; // Stop on first error
+          print('Error rendering page $i: $e');
         }
       }
       
+      await document.close();
       print('Successfully extracted ${extractedImages.length} pages from PDF');
       return extractedImages;
-      
     } catch (e) {
-      print('Error in _extractPdfPagesAsImages: $e');
-      return [];
+      print('pdfx rendering failed, falling back to placeholder images: $e');
+      // Fallback to placeholder approach
+      try {
+        final Uint8List pdfBytes = await pdfFile.readAsBytes();
+        final int estimatedPageCount = _estimatePdfPageCount(pdfBytes);
+        for (int pageIndex = 0; pageIndex < estimatedPageCount; pageIndex++) {
+          final Uint8List? pageImageBytes = await _renderPdfPageAsImage(pdfFile, pageIndex);
+          if (pageImageBytes != null && pageImageBytes.isNotEmpty) {
+            final String imageFileName = '${pdfBaseName}_page_${pageIndex + 1}_$timestamp.png';
+            final String imagePath = path.join(pdfTempDir.path, imageFileName);
+            final File imageFile = File(imagePath);
+            await imageFile.writeAsBytes(pageImageBytes);
+            if (await imageFile.exists()) {
+              extractedImages.add(imageFile);
+            }
+          }
+        }
+      } catch (e2) {
+        print('Fallback placeholder extraction also failed: $e2');
+      }
+      return extractedImages;
     }
   }
 
@@ -712,23 +737,44 @@ print('Rendering PDF page $pageIndex from: ${pdfFile.path}');
       // Create a new PDF document
       final pw.Document combinedDoc = pw.Document();
       
-      // Add cover page if available
+      // Add cover page if available (formatted like the provided sample)
       if (_coverPageInfo.isNotEmpty) {
         combinedDoc.addPage(
           pw.Page(
-            build: (context) => pw.Center(
+            build: (context) {
+              pw.Widget headerLogo = pw.SizedBox();
+              try {
+                final ByteData logoData = rootBundle.load('assets/nsu_logo.png') as ByteData;
+                headerLogo = pw.Image(pw.MemoryImage(logoData.buffer.asUint8List()), height: 80);
+              } catch (_) {}
+              return pw.Padding(
+                padding: const pw.EdgeInsets.all(40),
               child: pw.Column(
-                mainAxisAlignment: pw.MainAxisAlignment.center,
+                  crossAxisAlignment: pw.CrossAxisAlignment.start,
                 children: [
-                  pw.Text('Cover Page', style: pw.TextStyle(fontSize: 24, fontWeight: pw.FontWeight.bold)),
-                  pw.SizedBox(height: 20),
-                  pw.Text('Name: ${_coverPageInfo['name'] ?? ''}'),
-                  pw.Text('Email: ${_coverPageInfo['email'] ?? ''}'),
-                  pw.Text('Student ID: ${_coverPageInfo['studentId'] ?? ''}'),
-                  pw.Text('Course: ${_coverPageInfo['courseName'] ?? ''}'),
-                ],
-              ),
-            ),
+                    pw.Center(child: headerLogo),
+                    pw.SizedBox(height: 12),
+                    pw.Center(
+                      child: pw.Column(children: [
+                        pw.Text('North South University', style: pw.TextStyle(fontSize: 18, fontWeight: pw.FontWeight.bold)),
+                        pw.SizedBox(height: 6),
+                        pw.Text('Department of Electrical and Computer Engineering', style: pw.TextStyle(fontSize: 12)),
+                      ]),
+                    ),
+                    pw.SizedBox(height: 28),
+                    pw.Row(children: [pw.Container(width: 80, child: pw.Text('Name:', style: pw.TextStyle(fontWeight: pw.FontWeight.bold))), pw.Expanded(child: pw.Text(_coverPageInfo['name'] ?? ''))]),
+                    pw.Row(children: [pw.Container(width: 80, child: pw.Text('ID:', style: pw.TextStyle(fontWeight: pw.FontWeight.bold))), pw.Expanded(child: pw.Text(_coverPageInfo['studentId'] ?? ''))]),
+                    pw.Row(children: [pw.Container(width: 80, child: pw.Text('Course:', style: pw.TextStyle(fontWeight: pw.FontWeight.bold))), pw.Expanded(child: pw.Text(_coverPageInfo['courseName'] ?? ''))]),
+                    pw.Row(children: [pw.Container(width: 80, child: pw.Text('Section:', style: pw.TextStyle(fontWeight: pw.FontWeight.bold))), pw.Expanded(child: pw.Text(_coverPageInfo['section'] ?? ''))]),
+                    pw.SizedBox(height: 28),
+                    pw.Center(child: pw.Text('ASSIGNMENT - ${_coverPageInfo['assignmentNumber'] ?? '1'}', style: pw.TextStyle(fontSize: 16, fontWeight: pw.FontWeight.bold))),
+                    pw.SizedBox(height: 16),
+                    pw.Row(children: [pw.Container(width: 120, child: pw.Text('Submitted To:', style: pw.TextStyle(fontWeight: pw.FontWeight.bold))), pw.Expanded(child: pw.Text((_coverPageInfo['submittedTo'] ?? '').toString().toUpperCase()))]),
+                    pw.Row(children: [pw.Container(width: 120, child: pw.Text('Submission Date:', style: pw.TextStyle(fontWeight: pw.FontWeight.bold))), pw.Expanded(child: pw.Text(DateTime.now().toString().split(' ').first))]),
+                  ],
+                ),
+              );
+            },
           ),
         );
       }
@@ -879,41 +925,48 @@ print('Rendering PDF page $pageIndex from: ${pdfFile.path}');
   }
   
   Future<void> _addNewPage() async {
-    // Show options dialog
-    final String? selectedOption = await showDialog<String>(
+    // Modern bottom sheet UI with Cancel at the end
+    final String? selectedOption = await showModalBottomSheet<String>(
       context: context,
-      builder: (BuildContext context) {
-        return AlertDialog(
-          title: const Text('Add Pages'),
-          content: const Text('Choose how you want to add new pages:'),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text('Cancel'),
-            ),
-            TextButton(
-              onPressed: () => Navigator.pop(context, 'take_photos'),
-              child: Row(
+      backgroundColor: Colors.transparent,
+      builder: (ctx) {
+        final theme = Theme.of(ctx);
+        return Container(
+          decoration: BoxDecoration(
+            color: theme.scaffoldBackgroundColor,
+            borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
+            boxShadow: [
+              BoxShadow(color: Colors.black.withOpacity(0.2), blurRadius: 10, offset: const Offset(0, -2)),
+            ],
+          ),
+          padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
+          child: SafeArea(
+            top: false,
+            child: Column(
                 mainAxisSize: MainAxisSize.min,
-                children: const [
-                  Icon(Icons.camera_alt),
-                  SizedBox(width: 8),
-                  Text('Take more photos'),
+              children: [
+                Container(width: 38, height: 4, decoration: BoxDecoration(color: Colors.grey.withOpacity(0.4), borderRadius: BorderRadius.circular(2))),
+                const SizedBox(height: 12),
+                const Text('Add Pages', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600)),
+                const SizedBox(height: 8),
+                ListTile(
+                  leading: const Icon(Icons.camera_alt),
+                  title: const Text('Take more photos'),
+                  onTap: () => Navigator.pop(ctx, 'take_photos'),
+                ),
+                ListTile(
+                  leading: const Icon(Icons.folder_open),
+                  title: const Text('Select from ScanMate'),
+                  onTap: () => Navigator.pop(ctx, 'select_pdf'),
+                ),
+                const SizedBox(height: 4),
+            TextButton(
+                  onPressed: () => Navigator.pop(ctx),
+                  child: const Text('Cancel'),
+                ),
                 ],
               ),
             ),
-            TextButton(
-              onPressed: () => Navigator.pop(context, 'select_pdf'),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: const [
-                  Icon(Icons.folder_open),
-                  SizedBox(width: 8),
-                  Text('Select from ScanMate'),
-                ],
-              ),
-            ),
-          ],
         );
       },
     );
@@ -933,18 +986,67 @@ print('Rendering PDF page $pageIndex from: ${pdfFile.path}');
   /// Opens the cover page editing screen
   Future<void> _editCoverPage() async {
     try {
-      // Navigate to cover page screen with current document paths
-      if (mounted) {
-        final result = await Navigator.of(context).push(
-          MaterialPageRoute(
-            builder: (context) => DocumentCoverPageScreen(
-              scannedDocuments: _documentPages.map((file) => file.path).toList(),
+      final current = await getLastCoverPageInfo();
+      final nameCtl = TextEditingController(text: current['name'] ?? '');
+      final emailCtl = TextEditingController(text: current['email'] ?? '');
+      final idCtl = TextEditingController(text: current['studentId'] ?? '');
+      final courseCtl = TextEditingController(text: current['courseName'] ?? '');
+      final assignmentCtl = TextEditingController(text: current['assignmentNumber'] ?? '1');
+      final sectionCtl = TextEditingController(text: current['section'] ?? '');
+      final submittedToCtl = TextEditingController(text: current['submittedTo'] ?? '');
+
+      final saved = await showDialog<bool>(
+        context: context,
+        builder: (ctx) {
+          return AlertDialog(
+            title: const Text('Edit Cover Page Info'),
+            content: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Row(
+                    children: [
+                      Expanded(child: TextField(controller: assignmentCtl, decoration: const InputDecoration(labelText: 'Assignment No.'))),
+                      SizedBox(width: 8),
+                      Expanded(child: TextField(controller: sectionCtl, decoration: const InputDecoration(labelText: 'Section'))),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  TextField(controller: submittedToCtl, decoration: const InputDecoration(labelText: 'Submitted To (Faculty)')),
+                  const SizedBox(height: 8),
+                  TextField(controller: nameCtl, decoration: const InputDecoration(labelText: 'Name')),
+                  const SizedBox(height: 8),
+                  TextField(controller: emailCtl, decoration: const InputDecoration(labelText: 'Email')),
+                  const SizedBox(height: 8),
+                  TextField(controller: idCtl, decoration: const InputDecoration(labelText: 'Student ID')),
+                  const SizedBox(height: 8),
+                  TextField(controller: courseCtl, decoration: const InputDecoration(labelText: 'Course')),
+                ],
+              ),
             ),
-          ),
-        );
-        
-        if (result != null) {
-          // Refresh the PDF if cover page was updated
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+              ElevatedButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Save')),
+            ],
+          );
+        },
+      ) ??
+          false;
+
+      if (!saved) return;
+
+      final info = {
+        'name': nameCtl.text.trim(),
+        'email': emailCtl.text.trim(),
+        'studentId': idCtl.text.trim(),
+        'courseName': courseCtl.text.trim(),
+        'assignmentNumber': assignmentCtl.text.trim().isEmpty ? '1' : assignmentCtl.text.trim(),
+        'section': sectionCtl.text.trim(),
+        'submittedTo': submittedToCtl.text.trim(),
+      };
+      await saveCoverPageInfo(info);
+      _coverPageInfo = info;
+
           await _regeneratePdfWithNewOrder();
       
           if (mounted) {
@@ -954,8 +1056,6 @@ print('Rendering PDF page $pageIndex from: ${pdfFile.path}');
                 backgroundColor: Colors.green,
               ),
             );
-          }
-        }
       }
     } catch (e) {
       print('Error editing cover page: $e');
@@ -1056,41 +1156,64 @@ print('Rendering PDF page $pageIndex from: ${pdfFile.path}');
         isLoading = true;
       });
 
-      // Get ScanMate folder path
-      Directory? scanMateDir;
+      // Prepare candidate directories to search for PDFs
+      final List<File> pdfFiles = [];
+
+      // 1) App cache directory (where freshly scanned PDFs may live)
+      final cacheDir = await getTemporaryDirectory();
+      pdfFiles.addAll(await _findPdfFilesInDir(cacheDir));
+
+      // 2) App documents/ScanMate (always accessible)
+      final appDocs = await getApplicationDocumentsDirectory();
+      final appDocsScanMate = Directory('${appDocs.path}/ScanMate');
+      if (await appDocsScanMate.exists()) {
+        pdfFiles.addAll(await _findPdfFilesInDir(appDocsScanMate));
+      }
+
+      // 3) External app-specific dir/ScanMate (Android)
       if (Platform.isAndroid) {
-        scanMateDir = Directory('/storage/emulated/0/Download/ScanMate');
-        if (!await scanMateDir.exists()) {
           final externalDir = await getExternalStorageDirectory();
           if (externalDir != null) {
-            scanMateDir = Directory('${externalDir.path}/ScanMate');
+          final externalScanMate = Directory('${externalDir.path}/ScanMate');
+          if (await externalScanMate.exists()) {
+            pdfFiles.addAll(await _findPdfFilesInDir(externalScanMate));
           }
         }
-      } else {
-        final documentsDir = await getApplicationDocumentsDirectory();
-        scanMateDir = Directory('${documentsDir.path}/ScanMate');
+
+        // 4) Public Downloads/ScanMate (may need permission on some OS versions)
+        final downloadsScanMate = Directory('/storage/emulated/0/Download/ScanMate');
+        if (await downloadsScanMate.exists()) {
+          // Best-effort permission for broader access on older Android versions
+          await _ensureStoragePermissionIfNeeded();
+          pdfFiles.addAll(await _findPdfFilesInDir(downloadsScanMate));
+        }
       }
 
-      if (scanMateDir == null || !await scanMateDir.exists()) {
-        throw Exception('ScanMate folder not found. Please save some PDFs first.');
+      // Deduplicate by path
+      final Map<String, File> unique = {
+        for (final f in pdfFiles) f.path: f,
+      };
+      final List<File> uniquePdfs = unique.values.toList()..sort((a, b) => b.lastModifiedSync().compareTo(a.lastModifiedSync()));
+
+      if (uniquePdfs.isEmpty) {
+        throw Exception('No PDF files found in ScanMate locations. Save a PDF first, then try again.');
       }
 
-      // Get all PDF files from ScanMate folder
-      final List<FileSystemEntity> entities = await scanMateDir.list().toList();
-      final List<File> pdfFiles = entities
-          .where((entity) => entity is File && entity.path.toLowerCase().endsWith('.pdf'))
-          .cast<File>()
-          .toList();
-
-      if (pdfFiles.isEmpty) {
-        throw Exception('No PDF files found in ScanMate folder.');
+      // Option A: Directly open system picker at ScanMate, then merge with discovered list
+      File? selectedPdf;
+      try {
+        final dynamic pickedPath = await FlutterDocScanner().pickPdfFromScanMate();
+        if (pickedPath is String && pickedPath.toLowerCase().endsWith('.pdf')) {
+          selectedPdf = File(pickedPath);
+        }
+      } catch (_) {
+        // Ignore and fall back to in-app selector
       }
 
-      // Show file selection dialog
-      final File? selectedPdf = await _showPdfSelectionDialog(pdfFiles);
+      // If system picker didn't return, show in-app list
+      selectedPdf ??= await _showPdfSelectionDialog(uniquePdfs);
 
       if (selectedPdf != null) {
-        // Extract pages from the selected PDF
         await _extractPagesFromPdf(selectedPdf);
       }
     } catch (e) {
@@ -1109,6 +1232,42 @@ print('Rendering PDF page $pageIndex from: ${pdfFile.path}');
           isLoading = false;
         });
       }
+    }
+  }
+
+  Future<bool> _ensureStoragePermissionIfNeeded() async {
+    if (!Platform.isAndroid) return true;
+    final sdkInt = int.tryParse((await _getAndroidSdkInt()) ?? '') ?? 0;
+    // On Android 13+ (SDK 33), READ_EXTERNAL_STORAGE is not used for PDFs. We will best-effort request manage/storage
+    // only if the plugin exposes it; otherwise rely on accessible dirs.
+    // For <= 12, ask for storage permission.
+    if (sdkInt <= 32) {
+      final status = await Permission.storage.request();
+      return status.isGranted;
+    }
+    return true;
+  }
+
+  Future<String?> _getAndroidSdkInt() async {
+    try {
+      final MethodChannel platform = const MethodChannel('flutter_doc_scanner_internal');
+      final String? sdk = await platform.invokeMethod<String>('getAndroidSdkInt');
+      return sdk;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<List<File>> _findPdfFilesInDir(Directory dir) async {
+    try {
+      if (!await dir.exists()) return [];
+      final entries = await dir.list().toList();
+      return entries
+          .whereType<File>()
+          .where((f) => f.path.toLowerCase().endsWith('.pdf'))
+          .toList();
+    } catch (_) {
+      return [];
     }
   }
 
@@ -1448,9 +1607,9 @@ print('Rendering PDF page $pageIndex from: ${pdfFile.path}');
     
           // Show a snackbar to inform user about expected wait time
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('AI Processing Started - Model loading may take 5-10 minutes initially on your device. Please be patient...'),
-          duration: Duration(seconds: 10),
+        const SnackBar(
+          content: Text('This apk works only with printed or typed text — handwriting is not supported for this version'),
+          duration: Duration(seconds: 6),
           backgroundColor: Colors.blue,
         ),
       );
@@ -2077,99 +2236,152 @@ print('Rendering PDF page $pageIndex from: ${pdfFile.path}');
   Widget _buildEditModeView() {
     return Column(
       children: [
-        Padding(
-          padding: const EdgeInsets.all(8.0),
-          child: Text(
-            'Drag to reorder pages. Tap + to take photos or add from ScanMate folder.',
-            style: TextStyle(
-              fontWeight: FontWeight.bold,
-              color: Colors.grey[700],
-            ),
-          ),
+        const SizedBox(height: 8),
+        Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: const [
+            Icon(Icons.tips_and_updates, color: Colors.orange, size: 16),
+            SizedBox(width: 6),
+            Text('Drag to reorder pages. Tap + to add pages',
+                style: TextStyle(fontWeight: FontWeight.w600)),
+          ],
         ),
+        const SizedBox(height: 8),
         Expanded(
           child: _documentPageImages.isEmpty
             ? Center(
-                child: Text('No pages available to edit. Total document pages: ${_documentPages.length}'),
+                  child: Text(
+                    'No pages available to edit. Total document pages: ${_documentPages.length}',
+                  ),
               )
             : ReorderableGridView.builder(
                 gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
                   crossAxisCount: 2,
-                  crossAxisSpacing: 8,
-                  mainAxisSpacing: 8,
-                  childAspectRatio: 0.7,
-                ),
-                padding: const EdgeInsets.all(8),
+                    crossAxisSpacing: 10,
+                    mainAxisSpacing: 10,
+                    childAspectRatio: 0.66, // slightly taller
+                  ),
+                  padding: const EdgeInsets.all(10),
+                  dragWidgetBuilder: (index, child) {
+                    return Transform.scale(
+                      scale: 1.05,
+                      child: DecoratedBox(
+                        decoration: BoxDecoration(
+                          boxShadow: [
+                            BoxShadow(
+                              color: Colors.black.withOpacity(0.2),
+                              blurRadius: 16,
+                              offset: const Offset(0, 8),
+                            ),
+                          ],
+                        ),
+                        child: child,
+                      ),
+                    );
+                  },
                 itemCount: _documentPageImages.length,
-                itemBuilder: (context, index) {
-                  print('Building grid item $index, image size: ${_documentPageImages[index].length} bytes');
-                  return Stack(
+                   itemBuilder: (context, index) {
+                    return AnimatedContainer(
                     key: ValueKey(index),
+                      duration: const Duration(milliseconds: 250),
+                      curve: Curves.easeInOut,
+                      decoration: BoxDecoration(
+                        color: Theme.of(context).colorScheme.surface,
+                        borderRadius: BorderRadius.circular(0),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.black.withOpacity(0.08),
+                            blurRadius: 10,
+                            offset: const Offset(0, 4),
+                          ),
+                        ],
+                        border: Border.all(
+                          color: Colors.black.withOpacity(0.05),
+                        ),
+                      ),
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(0),
+                        child: Stack(
                     children: [
-                      Card(
-                        elevation: 3,
-                        clipBehavior: Clip.antiAlias,
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.stretch,
-                          children: [
-                            Expanded(
+                            Positioned.fill(
                               child: Image.memory(
                                 _documentPageImages[index],
                                 fit: BoxFit.cover,
                                 errorBuilder: (context, error, stackTrace) {
-                                  print('Error displaying image at index $index: $error');
                                   return Container(
                                     color: Colors.grey[300],
                                     child: Column(
                                       mainAxisAlignment: MainAxisAlignment.center,
-                                      children: [
+                                      children: const [
                                         Icon(Icons.error, color: Colors.red),
+                                        SizedBox(height: 8),
                                         Text('Image Error', style: TextStyle(fontSize: 12)),
                                       ],
                                     ),
                                   );
                                 },
-                              ),
-                            ),
-                            Container(
-                              color: Theme.of(context).colorScheme.surface,
-                              padding: const EdgeInsets.all(8.0),
-                              child: Text(
-                                'Page ${index + 1}',
-                                textAlign: TextAlign.center,
-                                style: TextStyle(
-                                  fontWeight: FontWeight.bold,
-                                ),
-                              ),
-                            ),
-                          ],
                         ),
                       ),
                       Positioned(
-                        top: 0,
-                        right: 0,
+                              top: 6,
+                              right: 6,
                         child: Material(
-                          color: Colors.transparent,
-                          child: IconButton(
-                            icon: const Icon(Icons.delete, color: Colors.red),
-                            onPressed: () {
+                                color: Colors.black.withOpacity(0.35),
+                                shape: const CircleBorder(),
+                                child: InkWell(
+                                  customBorder: const CircleBorder(),
+                                  onTap: () {
                               setState(() {
                                 _documentPages.removeAt(index);
                                 _documentPageImages.removeAt(index);
                               });
                             },
-                          ),
+                                  child: const Padding(
+                                    padding: EdgeInsets.all(6),
+                                    child: Icon(Icons.close, size: 18, color: Colors.white),
+                                  ),
+                                ),
+                              ),
+                            ),
+                            // Replace bottom label with a subtle top-left drag handle overlay
+                            Positioned(
+                              top: 0,
+                              left: 0,
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                                color: Colors.black.withOpacity(0.18),
+                                child: const Icon(Icons.drag_indicator, size: 16, color: Colors.white70),
                         ),
                       ),
+                             // Page number badge (bottom-right)
+                             Positioned(
+                               bottom: 6,
+                               right: 6,
+                               child: Container(
+                                 padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                 decoration: BoxDecoration(
+                                   color: Colors.black.withOpacity(0.45),
+                                   borderRadius: BorderRadius.circular(12),
+                                 ),
+                                 child: Text(
+                                   'Page ${index + 1}',
+                                   style: const TextStyle(
+                                     color: Colors.white,
+                                     fontSize: 12,
+                                     fontWeight: FontWeight.w600,
+                                   ),
+                                 ),
+                               ),
+                             ),
                     ],
+                        ),
+                      ),
                   );
                 },
                 onReorder: (oldIndex, newIndex) {
                   setState(() {
-                    // Update both document pages and their thumbnails
                     final File movedPage = _documentPages.removeAt(oldIndex);
                     _documentPages.insert(newIndex, movedPage);
-                    
                     final Uint8List movedImage = _documentPageImages.removeAt(oldIndex);
                     _documentPageImages.insert(newIndex, movedImage);
                   });
@@ -2261,6 +2473,8 @@ print('Rendering PDF page $pageIndex from: ${pdfFile.path}');
           // Save the file
           final file = File('${scanMateDir.path}/$fileName');
           await pdfFile.copy(file.path);
+          // After successful save, increment scan count for APK cap
+          await _incrementUserScanCount();
           
           if (!context.mounted) return;
           ScaffoldMessenger.of(context).showSnackBar(
@@ -2286,8 +2500,8 @@ print('Rendering PDF page $pageIndex from: ${pdfFile.path}');
               duration: const Duration(seconds: 6),
             ),
           );
-          
-          Navigator.of(context).pop();
+      // Go back to Home
+      Navigator.of(context).popUntil((route) => route.isFirst);
           return;
         }
       } catch (directSaveError) {
@@ -2301,6 +2515,7 @@ print('Rendering PDF page $pageIndex from: ${pdfFile.path}');
         ext: 'pdf',
         mimeType: MimeType.pdf,
       );
+      await _incrementUserScanCount();
 
       if (!context.mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(

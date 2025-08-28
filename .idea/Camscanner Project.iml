@@ -141,6 +141,12 @@
       <excludeFolder url="file://$MODULE_DIR$/flutter_doc_scanner-main/example/windows/flutter/ephemeral/.plugin_symlinks/flutter_doc_scanner/.dart_tool" />
       <excludeFolder url="file://$MODULE_DIR$/flutter_doc_scanner-main/example/windows/flutter/ephemeral/.plugin_symlinks/flutter_doc_scanner/.pub" />
       <excludeFolder url="file://$MODULE_DIR$/flutter_doc_scanner-main/example/windows/flutter/ephemeral/.plugin_symlinks/flutter_doc_scanner/build" />
+      <excludeFolder url="file://$MODULE_DIR$/flutter_doc_scanner-main/example/windows/flutter/ephemeral/.plugin_symlinks/pdfx/.dart_tool" />
+      <excludeFolder url="file://$MODULE_DIR$/flutter_doc_scanner-main/example/windows/flutter/ephemeral/.plugin_symlinks/pdfx/.pub" />
+      <excludeFolder url="file://$MODULE_DIR$/flutter_doc_scanner-main/example/windows/flutter/ephemeral/.plugin_symlinks/pdfx/build" />
+      <excludeFolder url="file://$MODULE_DIR$/flutter_doc_scanner-main/example/windows/flutter/ephemeral/.plugin_symlinks/pdfx/example/.dart_tool" />
+      <excludeFolder url="file://$MODULE_DIR$/flutter_doc_scanner-main/example/windows/flutter/ephemeral/.plugin_symlinks/pdfx/example/.pub" />
+      <excludeFolder url="file://$MODULE_DIR$/flutter_doc_scanner-main/example/windows/flutter/ephemeral/.plugin_symlinks/pdfx/example/build" />
     </content>
     <orderEntry type="inheritedJdk" />
     <orderEntry type="sourceFolder" forTests="false" />

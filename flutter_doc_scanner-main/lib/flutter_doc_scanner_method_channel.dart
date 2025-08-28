@@ -75,4 +75,10 @@ class MethodChannelFlutterDocScanner extends FlutterDocScannerPlatform {
     );
     return data;
   }
+
+  @override
+  Future<dynamic> pickPdfFromScanMate() async {
+    final data = await methodChannel.invokeMethod<dynamic>('pickPdfFromScanMate');
+    return data;
+  }
 }
